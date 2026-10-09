@@ -1,8 +1,10 @@
 import Link from "next/link";
-import { LayoutDashboard, Smartphone, Store, Zap } from "lucide-react";
+import { Briefcase, LayoutDashboard, ShieldAlert, Smartphone, Store, Zap } from "lucide-react";
 
 const links = [
   { href: "/terminal", icon: Store, title: "Merchant Terminal", body: "Cashier screen — generate a dynamic pay node." },
+  { href: "/dashboard/merchant", icon: Briefcase, title: "Merchant Portal", body: "Terminal, lookback, daily briefing and ad campaigns." },
+  { href: "/dashboard/admin", icon: ShieldAlert, title: "Admin Intelligence Hub", body: "Network telemetry, Watchdog oracle and fee inspector." },
   { href: "/dashboard", icon: LayoutDashboard, title: "Executive Dashboard", body: "Live GMV, velocity, fees and compliance view." },
 ];
 
@@ -19,7 +21,7 @@ export default function Home() {
           Single-use dynamic tokens, cleared on EthioPay-IPS / Arifpay rails. 2Pay never touches funds.
         </p>
       </div>
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2">
         {links.map(({ href, icon: Icon, title, body }) => (
           <Link key={href} href={href} className="rounded-2xl border border-slate-800 bg-slate-900 p-5 transition hover:border-brand">
             <Icon className="mb-3 h-6 w-6 text-brand" />

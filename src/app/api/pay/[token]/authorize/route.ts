@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
+import { getAdminClient } from "@/lib/supabase-admin";
+import { checkAml, checkVelocity } from "@/lib/watchdog";
 import { RAILS } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -15,5 +17,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
     const expired = error.message.includes("TOKEN_INVALID_OR_EXPIRED");
     return NextResponse.json({ error: expired ? "Token invalid, used or expired" : error.message }, { status: expired ? 410 : 500 });
   }
+
+  // Watchdog rules run after the payer is already approved; they must never fail the payment.
+  try {
+    const admin = getAdminClient();
+    await Promise.all([checkVelocity(admin, data.merchant_id, data.id), checkAml(admin, data)]);
+  } catch (e) {
+    console.error("[authorize] watchdog skipped:", (e as Error).message);
+  }
+
   return NextResponse.json(data);
 }

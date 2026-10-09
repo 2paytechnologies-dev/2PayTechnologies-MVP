@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity, Banknote, Coins, Gauge, Landmark, ShieldCheck, Zap } from "lucide-react";
 import { supabase } from "@/lib/supabase";
-import type { Merchant, Transaction } from "@/lib/types";
+import { isPaid, type Merchant, type Transaction } from "@/lib/types";
 import { RailBadge, StatusBadge } from "@/components/RailBadge";
 
 const fmt = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -49,7 +49,7 @@ export default function DashboardPage() {
   }, []);
 
   const stats = useMemo(() => {
-    const ok = txs.filter((t) => t.status === "SUCCESS");
+    const ok = txs.filter((t) => isPaid(t.status));
     const lat = ok.map((t) => t.latency_ms).filter((l): l is number => l != null);
     return {
       gmv: ok.reduce((s, t) => s + Number(t.amount), 0),
@@ -127,7 +127,7 @@ export default function DashboardPage() {
                   <td className="px-4 py-3">{merchants[t.merchant_id]?.business_name ?? "—"}</td>
                   <td className="px-4 py-3 font-medium tabular-nums">{fmt(Number(t.amount))} {t.currency}</td>
                   <td className="px-4 py-3"><RailBadge rail={t.rail} /></td>
-                  <td className="px-4 py-3 tabular-nums text-slate-300">{t.status === "SUCCESS" ? fmt(Number(t.fee_ft)) : "—"}</td>
+                  <td className="px-4 py-3 tabular-nums text-slate-300">{isPaid(t.status) ? fmt(Number(t.fee_ft)) :"—"}</td>
                   <td className="px-4 py-3 tabular-nums text-slate-300">{t.latency_ms != null ? `${(t.latency_ms / 1000).toFixed(2)}s` : "—"}</td>
                   <td className="px-4 py-3"><StatusBadge status={t.status} /></td>
                 </tr>

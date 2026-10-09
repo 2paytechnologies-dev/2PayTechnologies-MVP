@@ -1,6 +1,7 @@
 "use client";
 
 import { use, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { CheckCircle2, Clock, Fingerprint, Loader2, ShieldCheck, XCircle } from "lucide-react";
 import type { PayView, Rail } from "@/lib/types";
 import { RAILS } from "@/lib/types";
@@ -21,6 +22,7 @@ const reasonText: Record<string, string> = {
 
 export default function PayPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = use(params);
+  const router = useRouter();
   const [state, setState] = useState<State>({ kind: "loading" });
   const [rail, setRail] = useState<Rail>("EthioPay-IPS");
   const [busy, setBusy] = useState(false);
@@ -63,6 +65,7 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Authorization failed");
       setState({ kind: "paid", latency: data.latency_ms, tx: { ...state.tx, rail } });
+      setTimeout(() => router.replace(`/pay/${token}/receipt`), 900); // brief confirmation, then the receipt
     } catch (e) {
       setError((e as Error).message);
     } finally {
