@@ -190,6 +190,28 @@ export default function ReceiptPage({ params }: { params: Promise<{ token: strin
 
             {/* Bottom-anchored sponsored slot */}
             <div className="mt-auto flex flex-col gap-5">
+              {!receipt.ad && (
+                // Nothing is being served for this merchant right now: keep the slot visible and recruit advertisers.
+                <section className="rounded-2xl border-2 border-dashed border-amber-300 bg-amber-50 p-4" aria-label="Advertising space">
+                  <span className="inline-block rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-700">📢 Advertising space</span>
+                  <div className="mt-3 flex items-start gap-3">
+                    <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl border border-amber-200 bg-white text-3xl">📣</div>
+                    <div className="min-w-0">
+                      <h2 className="font-bold leading-snug text-slate-900">Advertise your business here</h2>
+                      <p className="mt-0.5 text-sm text-slate-600">Reach nearby customers the moment they pay. Create an offer in minutes from your 2Pay dashboard.</p>
+                    </div>
+                  </div>
+                  <a
+                    href="/dashboard/merchant?tab=ads"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-4 flex items-center justify-center rounded-xl border border-amber-300 bg-white py-2.5 text-sm font-semibold text-amber-800 active:bg-amber-100"
+                  >
+                    Advertise with 2Pay
+                  </a>
+                </section>
+              )}
+
               {receipt.ad && (
                 <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
                   <span className="inline-block rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-700">📢 Sponsored Nearby Offer</span>

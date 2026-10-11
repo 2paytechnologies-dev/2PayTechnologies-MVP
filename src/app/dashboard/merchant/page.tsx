@@ -43,6 +43,10 @@ export default function MerchantPortalPage() {
 
   useEffect(() => {
     void fetchSession().then(setSession);
+    // Deep link, e.g. /dashboard/merchant?tab=ads from the receipt's "Advertise your business here" card.
+    const wanted = new URLSearchParams(window.location.search).get("tab");
+    const match = TABS.find((t) => t.id === wanted);
+    if (match) setTab(match.id);
   }, []);
 
   const signOut = async () => {
