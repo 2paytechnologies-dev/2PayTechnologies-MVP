@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { feeBreakdown } from "@/lib/fee";
 import { AdminConfigError, getAdminClient } from "@/lib/supabase-admin";
 import { isUuid, toMasked, type SavedAccount } from "@/lib/settlement";
+import { requireMerchant } from "@/lib/guard";
 import { nodeFeeContext } from "@/lib/watchdog";
 
 export const dynamic = "force-dynamic";
@@ -9,9 +10,54 @@ export const dynamic = "force-dynamic";
 /** Postgres 42703 (undefined column) / PostgREST PGRST204 (column missing from schema cache): a migration has not been applied. */
 const isSchemaDrift = (e: { code?: string; message?: string }) => e.code === "42703" || e.code === "PGRST204" || /schema cache/i.test(e.message ?? "");
 const SCHEMA_DRIFT = {
-  error: "The database is missing the settlement-routing columns. Run supabase/multi_rail_routing.sql in the Supabase SQL editor, then try again.",
+  error: "The database is out of date. Run the latest migrations in supabase/ in the Supabase SQL editor, then try again.",
   code: "SCHEMA_OUT_OF_DATE",
 };
+
+const MAX_PAGE = 1000;
+
+/**
+ * A merchant's transactions in [from, to), newest first, paged with limit/offset.
+ * Used by the lookback, daily briefing and CSV export. Only the merchant (or an admin) may read them.
+ */
+export async function GET(req: Request) {
+  const q = new URL(req.url).searchParams;
+  const merchantId = q.get("merchant_id") ?? "";
+  if (!isUuid(merchantId)) return NextResponse.json({ error: "merchant_id (uuid) is required" }, { status: 400 });
+  const guard = await requireMerchant(merchantId);
+  if (!guard.ok) return guard.res;
+
+  const from = q.get("from");
+  const to = q.get("to");
+  if (!from || !to || Number.isNaN(Date.parse(from)) || Number.isNaN(Date.parse(to))) {
+    return NextResponse.json({ error: "from and to (ISO timestamps) are required" }, { status: 400 });
+  }
+  const limit = Math.min(MAX_PAGE, Math.max(1, Number(q.get("limit")) || MAX_PAGE));
+  const offset = Math.max(0, Number(q.get("offset")) || 0);
+
+  try {
+    const { data, error } = await getAdminClient()
+      .from("transactions")
+      .select("*")
+      .eq("merchant_id", merchantId)
+      .gte("created_at", from)
+      .lt("created_at", to)
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false }) // stable tiebreak so pages never overlap
+      .range(offset, offset + limit); // one extra row tells the caller whether more remain
+    if (error) {
+      console.error("[transactions GET]", error.code, error.message);
+      return NextResponse.json({ error: "Could not load transactions" }, { status: 500 });
+    }
+    const rows = data ?? [];
+    // Rail credentials never leave the server: strip provider internals before returning.
+    const safe = rows.slice(0, limit).map(({ rail_checkout_url, rail_session_id, rail_nonce, ...rest }) => rest);
+    return NextResponse.json({ rows: safe, hasMore: rows.length > limit }, { headers: { "Cache-Control": "no-store" } });
+  } catch (e) {
+    if (e instanceof AdminConfigError) return NextResponse.json({ error: "Server misconfigured" }, { status: 500 });
+    throw e;
+  }
+}
 
 /**
  * Create a PENDING transaction (dynamic pay node) with a 90s TTL and a node-priced orchestration fee.
@@ -26,6 +72,8 @@ export async function POST(req: Request) {
   if (!isUuid(merchantId) || !Number.isFinite(amount) || amount <= 0 || amount > 1_000_000) {
     return NextResponse.json({ error: "Invalid merchant or amount" }, { status: 400 });
   }
+  const guard = await requireMerchant(merchantId);
+  if (!guard.ok) return guard.res;
   const rounded = Math.round(amount * 100) / 100;
 
   let admin;

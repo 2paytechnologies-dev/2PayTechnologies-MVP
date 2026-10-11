@@ -2,9 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Activity, Banknote, CheckCircle2, Clock, ShieldAlert } from "lucide-react";
-import { supabase } from "@/lib/supabase";
 import { eatDateKey, eatDayEndISO, eatDayStartISO, fmt } from "@/lib/format";
-import { fetchTransactions } from "@/lib/tx-query";
+import { countWatchdogEvents, fetchTransactions } from "@/lib/tx-query";
 import { isPaid, type Merchant, type Transaction } from "@/lib/types";
 
 /** A paid tap not confirmed by Arifpay within this window counts as unreconciled. */
@@ -22,19 +21,15 @@ export function BriefingTab({ merchant }: { merchant: Merchant }) {
     const day = eatDateKey(new Date());
     const from = eatDayStartISO(day);
     try {
-      const [tx, ev] = await Promise.all([
+      const [tx, alerts] = await Promise.allSettled([
         fetchTransactions(merchant.id, from, eatDayEndISO(day)),
-        supabase
-          .from("watchdog_events")
-          .select("id", { count: "exact", head: true })
-          .eq("merchant_id", merchant.id)
-          .eq("event_type", "SETTLEMENT_MISMATCH")
-          .gte("created_at", from),
+        countWatchdogEvents(merchant.id, "SETTLEMENT_MISMATCH", from),
       ]);
-      setRows(tx.rows);
-      setMismatches(ev.count ?? 0);
+      if (tx.status === "rejected") throw tx.reason;
+      setRows(tx.value.rows);
+      setMismatches(alerts.status === "fulfilled" ? alerts.value : 0);
       setNow(Date.now());
-      setError(ev.error ? "Mismatch alerts unavailable — reconciliation status may be incomplete." : null);
+      setError(alerts.status === "rejected" ? "Mismatch alerts unavailable — reconciliation status may be incomplete." : null);
     } catch (e) {
       setError((e as Error).message);
     }
@@ -42,16 +37,9 @@ export function BriefingTab({ merchant }: { merchant: Merchant }) {
 
   useEffect(() => {
     void load();
-    const channel = supabase
-      .channel(`briefing-${merchant.id}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "transactions", filter: `merchant_id=eq.${merchant.id}` }, () => void load())
-      .subscribe();
-    const poll = setInterval(load, 15_000);
-    return () => {
-      clearInterval(poll);
-      supabase.removeChannel(channel);
-    };
-  }, [load, merchant.id]);
+    const poll = setInterval(load, 10_000); // refresh while the briefing is open
+    return () => clearInterval(poll);
+  }, [load]);
 
   const brief = useMemo(() => {
     const paid = rows.filter((r) => isPaid(r.status));

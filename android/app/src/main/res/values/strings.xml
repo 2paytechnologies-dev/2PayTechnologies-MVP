@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name" translatable="false">2Pay Merchant</string>
-    <!-- Must match siteHost in app/build.gradle. -->
-    <string name="asset_statements" translatable="false">[{\"relation\": [\"delegate_permission/common.handle_all_urls\"], \"target\": {\"namespace\": \"web\", \"site\": \"https://2-pay-technologies-mvp.vercel.app\"}}]</string>
+    <string name="hce_service_description">2Pay tap-to-pay</string>
+    <string name="hce_aid_description">Presents the payment link to a customer\'s phone</string>
 </resources>

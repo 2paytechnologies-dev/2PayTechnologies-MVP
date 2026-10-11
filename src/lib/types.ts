@@ -1,5 +1,8 @@
-/** PENDING -> SUCCESS (customer authorized) -> SETTLED (Arifpay confirmed via webhook). */
-export type Status = "PENDING" | "SUCCESS" | "SETTLED" | "FAILED";
+/**
+ * Live rails:      PENDING -> PROCESSING (payer sent to the rail) -> SETTLED (rail confirmed) | FAILED.
+ * Simulated mode:  PENDING -> SUCCESS (instant authorization) -> SETTLED.
+ */
+export type Status = "PENDING" | "PROCESSING" | "SUCCESS" | "SETTLED" | "FAILED";
 import type { MaskedAccount } from "@/lib/settlement";
 
 /** The institution the payer settled through (e.g. "Awash Bank", "Telebirr"). Legacy rows hold "EthioPay-IPS" etc. */

@@ -1,3 +1,5 @@
+import { getNative } from "@/lib/native";
+
 export const EAT_TZ = "Africa/Addis_Ababa";
 
 export const fmt = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -42,6 +44,16 @@ export function toCSV(headers: string[], rows: (string | number | null)[][]): st
 }
 
 export function downloadFile(filename: string, content: string, mime: string) {
+  // Inside the Android app a blob download does nothing, so hand the bytes to the native layer to save.
+  const native = getNative();
+  if (native) {
+    const bytes = new TextEncoder().encode(content);
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    const result = native.saveFile(filename, mime, btoa(bin));
+    if (result.startsWith("error:")) throw new Error(`Could not save the file: ${result.slice(6)}`);
+    return;
+  }
   const url = URL.createObjectURL(new Blob([content], { type: mime }));
   const a = document.createElement("a");
   a.href = url;

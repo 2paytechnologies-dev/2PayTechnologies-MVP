@@ -9,9 +9,11 @@ import { RailBadge } from "@/components/RailBadge";
 
 type State =
   | { kind: "loading" }
-  | { kind: "ready"; tx: PayView }
+  | { kind: "ready"; tx: PayView; mode: "simulated" | "live"; resumed: boolean }
   | { kind: "invalid"; reason: string }
-  | { kind: "paid"; latency: number; tx: PayView };
+  | { kind: "paid"; latency: number | null; tx: PayView };
+
+const PHONE_KEY = "2pay:payer-phone";
 
 const reasonText: Record<string, string> = {
   NOT_FOUND: "This pay node does not exist.",
@@ -27,18 +29,25 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
   const [busy, setBusy] = useState<SettlementKind | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [secondsLeft, setSecondsLeft] = useState(0);
+  const [phone, setPhone] = useState("");
 
   useEffect(() => {
+    try {
+      setPhone(localStorage.getItem(PHONE_KEY) ?? "");
+    } catch {
+      /* storage unavailable */
+    }
     fetch(`/api/pay/${token}`)
       .then((r) => r.json())
       .then((d) => {
-        if (d.valid) setState({ kind: "ready", tx: d.tx });
+        if (d.valid) setState({ kind: "ready", tx: d.tx, mode: d.mode === "live" ? "live" : "simulated", resumed: !!d.resumed });
         else setState({ kind: "invalid", reason: reasonText[d.reason] ?? d.error ?? "Invalid pay node." });
       })
       .catch(() => setState({ kind: "invalid", reason: "Cannot reach 2Pay." }));
   }, [token]);
 
-  const expiresAt = state.kind === "ready" ? state.tx.expires_at : null;
+  // The 90s countdown only applies before the payer has been sent to their bank or wallet.
+  const expiresAt = state.kind === "ready" && !state.resumed ? state.tx.expires_at : null;
   useEffect(() => {
     if (!expiresAt) return;
     const tick = () => {
@@ -51,21 +60,35 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
     return () => clearInterval(id);
   }, [expiresAt]);
 
-  /** Tapping a rail runs the simulated settlement. The server derives the institution from the pay node itself. */
+  /**
+   * Tapping a rail starts the payment. Simulated mode authorizes at once; live mode sends the payer to the rail to
+   * approve, and the sale only turns paid when the rail confirms. The server derives the institution from the pay node.
+   */
   const pay = async (method: SettlementKind) => {
     if (state.kind !== "ready" || busy) return;
     setBusy(method);
     setError(null);
     try {
-      const res = await fetch(`/api/pay/${token}/authorize`, {
+      if (state.mode === "live") {
+        try {
+          localStorage.setItem(PHONE_KEY, phone);
+        } catch {
+          /* storage unavailable */
+        }
+      }
+      const res = await fetch(`/api/pay/${token}/initiate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ method }),
+        body: JSON.stringify({ method, phone }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Authorization failed");
-      setState({ kind: "paid", latency: data.latency_ms, tx: { ...state.tx, rail: data.rail } });
-      setTimeout(() => router.replace(`/pay/${token}/receipt`), 900); // brief confirmation, then the receipt
+      if (!res.ok) throw new Error(data.error ?? "Could not start the payment");
+      if (data.mode === "redirect") {
+        window.location.assign(data.url); // hand over to the bank / wallet; leave the buttons locked meanwhile
+        return;
+      }
+      setState({ kind: "paid", latency: data.latency_ms ?? null, tx: { ...state.tx, rail: data.rail ?? state.tx.rail } });
+      setTimeout(() => router.replace(data.next ?? `/pay/${token}/receipt`), 900); // brief confirmation, then the receipt
     } catch (e) {
       setError((e as Error).message);
       setBusy(null);
@@ -102,7 +125,9 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
             <ShieldCheck className="mt-0.5 h-6 w-6 shrink-0 text-brand" />
             <div className="text-sm">
               <div className="font-semibold text-emerald-300">Verified 2Pay Orchestration</div>
-              <div className="text-slate-300">→ Settling via Arifpay Rails</div>
+              <div className="text-slate-300">
+                {state.mode === "live" ? "→ You'll approve in your own bank or wallet" : "→ Demo mode: no real money moves"}
+              </div>
             </div>
           </div>
 
@@ -117,10 +142,29 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
               <span className="ml-2 text-xl text-slate-400">{state.tx.currency}</span>
             </div>
             <div className="mt-1 text-xs uppercase tracking-wide text-slate-500">Amount locked</div>
-            <div className="mt-4 flex items-center justify-center gap-1 text-sm text-slate-400">
-              <Clock className="h-4 w-4" /> {secondsLeft}s remaining
-            </div>
+            {state.resumed ? (
+              <div className="mt-4 text-sm text-sky-300">Payment in progress. You can pick up where you left off.</div>
+            ) : (
+              <div className="mt-4 flex items-center justify-center gap-1 text-sm text-slate-400">
+                <Clock className="h-4 w-4" /> {secondsLeft}s remaining
+              </div>
+            )}
           </div>
+
+          {state.mode === "live" && options.length > 0 && (
+            <label className="block space-y-1">
+              <span className="text-xs font-medium text-slate-300">Mobile number of the account you are paying from</span>
+              <input
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                inputMode="tel"
+                autoComplete="tel"
+                placeholder="0911 223 344"
+                maxLength={20}
+                className="h-12 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 text-lg text-slate-100 placeholder:text-slate-600 focus:border-brand focus:outline-none"
+              />
+            </label>
+          )}
 
           {options.length > 0 ? (
             <div className="space-y-3">
@@ -152,7 +196,9 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
           {error && <div className="rounded-lg bg-rose-500/15 p-3 text-sm text-rose-300">{error}</div>}
 
           <p className="text-center text-xs text-slate-500">
-            Simulated inherited authorization from your wallet or bank app. 2Pay never holds your funds.
+            {state.mode === "live"
+              ? "You approve the payment with your own bank or wallet. 2Pay never sees your PIN and never holds your funds."
+              : "Simulated authorization for demonstration. No real payment is made."}
           </p>
         </>
       )}
@@ -165,7 +211,7 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
             {Number(state.tx.amount).toLocaleString("en-US", { minimumFractionDigits: 2 })} {state.tx.currency} to {state.tx.merchant_name}
           </p>
           <RailBadge rail={state.tx.rail} />
-          <p className="text-sm text-slate-400">Completed in {(state.latency / 1000).toFixed(1)}s</p>
+          {state.latency != null && <p className="text-sm text-slate-400">Completed in {(state.latency / 1000).toFixed(1)}s</p>}
         </div>
       )}
     </main>

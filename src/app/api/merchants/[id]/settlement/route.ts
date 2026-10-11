@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { AdminConfigError, getAdminClient } from "@/lib/supabase-admin";
+import { requireMerchant } from "@/lib/guard";
 import { buildAccounts, isUuid, pickActive, toMasked, type SavedAccount, type SettlementView } from "@/lib/settlement";
 
 export const dynamic = "force-dynamic";
@@ -28,6 +29,8 @@ function view(row: Row): SettlementView {
 export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   if (!isUuid(id)) return NextResponse.json({ error: "Malformed merchant id" }, { status: 400 });
+  const guard = await requireMerchant(id);
+  if (!guard.ok) return guard.res;
   try {
     const { data, error } = await getAdminClient().from("merchants").select(COLUMNS).eq("id", id).maybeSingle();
     if (error) {
@@ -44,12 +47,14 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
 
 /**
  * Replace a merchant's saved accounts and choose the active ones.
- * SECURITY: the prototype has no merchant authentication, so anyone who knows a merchant id can call this.
- * Gate it behind a merchant session before the pilot goes live.
+ * SECURITY: this decides where customer money is routed. In test mode (AUTH_ENFORCED unset) anyone with the
+ * link can call it; with AUTH_ENFORCED=true only that merchant's own session (or an admin) can.
  */
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   if (!isUuid(id)) return NextResponse.json({ error: "Malformed merchant id" }, { status: 400 });
+  const guard = await requireMerchant(id);
+  if (!guard.ok) return guard.res;
   const body = await req.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
 

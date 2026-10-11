@@ -3,6 +3,7 @@ import type { Rail, Status } from "@/lib/types";
 
 const statusStyle: Record<Status, string> = {
   PENDING: "bg-slate-500/15 text-slate-300 ring-slate-500/30",
+  PROCESSING: "bg-sky-500/15 text-sky-300 ring-sky-500/30",
   SUCCESS: "bg-emerald-500/15 text-emerald-300 ring-emerald-500/30",
   SETTLED: "bg-teal-500/15 text-teal-300 ring-teal-500/30",
   FAILED: "bg-rose-500/15 text-rose-300 ring-rose-500/30",

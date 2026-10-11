@@ -1,72 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Banknote, Gauge, Network, ShieldCheck } from "lucide-react";
 import { Logo } from "@/components/Logo";
-import { supabase } from "@/lib/supabase";
 import { LATENCY_TARGET_S } from "@/lib/fee";
-import { eatDateKey, eatDayStartISO, fmt } from "@/lib/format";
-import { isPaid, MERCHANT_PUBLIC_COLUMNS, type Merchant, type Transaction, type WatchdogEvent } from "@/lib/types";
+import { fmt } from "@/lib/format";
+import { isPaid } from "@/lib/types";
+import { useOverview } from "@/lib/use-overview";
 import { WatchdogFeed } from "@/components/admin/WatchdogFeed";
 import { FeeInspector } from "@/components/admin/FeeInspector";
 
-const TX_CAP = 1000;
-const EVENT_CAP = 200;
-
 export default function AdminHubPage() {
-  const [txs, setTxs] = useState<Transaction[]>([]);
-  const [events, setEvents] = useState<WatchdogEvent[]>([]);
-  const [merchants, setMerchants] = useState<Merchant[]>([]);
-  const [eventError, setEventError] = useState<string | null>(null);
-  const [txError, setTxError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const since = eatDayStartISO(eatDateKey(new Date()));
-
-    const load = async () => {
-      const [t, e, m] = await Promise.all([
-        supabase.from("transactions").select("*").gte("created_at", since).order("created_at", { ascending: false }).limit(TX_CAP),
-        supabase.from("watchdog_events").select("*").order("created_at", { ascending: false }).limit(EVENT_CAP),
-        supabase.from("merchants").select(MERCHANT_PUBLIC_COLUMNS).order("business_name"),
-      ]);
-      if (cancelled) return;
-      setTxError(t.error ? t.error.message : null);
-      if (t.data) setTxs(t.data as Transaction[]);
-      if (e.error) setEventError(`Watchdog feed unavailable (${e.error.message}). Run supabase/pilot_reconcile.sql in the Supabase SQL editor.`);
-      else {
-        setEventError(null);
-        setEvents(e.data as WatchdogEvent[]);
-      }
-      if (m.data) setMerchants(m.data as Merchant[]);
-    };
-    void load();
-
-    const txChannel = supabase
-      .channel("admin-tx")
-      .on("postgres_changes", { event: "*", schema: "public", table: "transactions" }, (payload) => {
-        const row = payload.new as Transaction;
-        if (!row?.id) return;
-        setTxs((prev) => [row, ...prev.filter((p) => p.id !== row.id)].slice(0, TX_CAP));
-      })
-      .subscribe();
-    const evChannel = supabase
-      .channel("admin-watchdog")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "watchdog_events" }, (payload) => {
-        const row = payload.new as WatchdogEvent;
-        setEvents((prev) => [row, ...prev.filter((p) => p.id !== row.id)].slice(0, EVENT_CAP));
-      })
-      .subscribe();
-    const poll = setInterval(load, 10_000); // fallback if Realtime is unavailable
-
-    return () => {
-      cancelled = true;
-      clearInterval(poll);
-      supabase.removeChannel(txChannel);
-      supabase.removeChannel(evChannel);
-    };
-  }, []);
-
+  const { transactions: txs, events, merchants, error: txError, eventsError: eventError } = useOverview(5000);
   const stats = useMemo(() => {
     const paid = txs.filter((t) => isPaid(t.status));
     const lats = paid.map((t) => t.latency_ms).filter((l): l is number => l != null);

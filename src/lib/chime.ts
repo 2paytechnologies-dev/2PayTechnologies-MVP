@@ -3,6 +3,8 @@
  * asynchronously (Realtime), long after the last tap. So the AudioContext is created and resumed
  * on the cashier's FIRST touch (primeAudio) and reused for every later chime.
  */
+import { getNative } from "@/lib/native";
+
 let ctx: AudioContext | null = null;
 
 export function primeAudio() {
@@ -60,6 +62,12 @@ function speakAmharic(text: string) {
 export function playSettlementChime(text = "ተከፍሏል") {
   try {
     tone();
+    const native = getNative();
+    if (native) {
+      native.vibrate(250);
+      setTimeout(() => native.speak(text, "am"), 450); // WebView has no speechSynthesis, so the app speaks natively
+      return;
+    }
     setTimeout(() => speakAmharic(text), 450);
   } catch {
     /* ignore */

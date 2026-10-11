@@ -1,0 +1,66 @@
+/**
+ * The Android app injects `window.TwoPayNative` (see android/.../NativeBridge.kt). In a normal browser it is
+ * absent and everything here is a no-op, so the same web code runs in both places.
+ */
+export type NfcState = "READY" | "DISABLED" | "UNSUPPORTED";
+
+export interface NativeInfo {
+  native: true;
+  version: string;
+  nfc: NfcState;
+  hce: boolean;
+}
+
+interface Bridge {
+  info(): string;
+  setPayUrl(url: string): boolean;
+  clearPayUrl(): void;
+  keepAwake(on: boolean): void;
+  openNfcSettings(): void;
+  saveFile(name: string, mime: string, base64: string): string;
+  speak(text: string, lang: string): void;
+  vibrate(ms: number): void;
+  reload(): void;
+}
+
+declare global {
+  interface Window {
+    TwoPayNative?: Bridge;
+  }
+}
+
+export const getNative = (): Bridge | null => (typeof window !== "undefined" ? (window.TwoPayNative ?? null) : null);
+
+export function nativeInfo(): NativeInfo | null {
+  try {
+    const n = getNative();
+    return n ? (JSON.parse(n.info()) as NativeInfo) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Present a pay link to phones that tap this one. Returns false when not running in the app or the link was refused. */
+export function presentPayLink(url: string): boolean {
+  try {
+    return getNative()?.setPayUrl(url) ?? false;
+  } catch {
+    return false;
+  }
+}
+
+export function clearPayLink() {
+  try {
+    getNative()?.clearPayUrl();
+  } catch {
+    /* ignore */
+  }
+}
+
+export function keepScreenAwake(on: boolean) {
+  try {
+    getNative()?.keepAwake(on);
+  } catch {
+    /* ignore */
+  }
+}

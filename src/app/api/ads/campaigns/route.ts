@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { AdminConfigError, getAdminClient } from "@/lib/supabase-admin";
+import { requireMerchant } from "@/lib/guard";
 import { AD_IMPRESSION_COST, type TargetCategory } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -15,6 +16,8 @@ const configError = () => NextResponse.json({ error: "Server misconfigured" }, {
 export async function GET(req: Request) {
   const merchantId = new URL(req.url).searchParams.get("merchant_id") ?? "";
   if (!UUID.test(merchantId)) return NextResponse.json({ error: "merchant_id (uuid) is required" }, { status: 400 });
+  const guard = await requireMerchant(merchantId);
+  if (!guard.ok) return guard.res;
   try {
     const { data, error } = await getAdminClient()
       .from("ad_campaigns")
@@ -76,6 +79,8 @@ export async function POST(req: Request) {
   if (!Number.isFinite(budget) || budget < MIN_BUDGET || budget > MAX_BUDGET)
     errors.push(`Budget must be between ${MIN_BUDGET} and ${MAX_BUDGET} ETB`);
   if (errors.length) return NextResponse.json({ error: errors.join(". ") }, { status: 400 });
+  const guard = await requireMerchant(merchantId);
+  if (!guard.ok) return guard.res;
 
   try {
     const admin = getAdminClient();

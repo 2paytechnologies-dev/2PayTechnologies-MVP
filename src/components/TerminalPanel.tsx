@@ -4,9 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import Link from "next/link";
 import { Check, CheckCircle2, Copy, Delete, Loader2, Nfc, QrCode, RefreshCw, RotateCcw, Route, TriangleAlert } from "lucide-react";
-import { supabase } from "@/lib/supabase";
 import { isPaid, type Transaction } from "@/lib/types";
 import { primeAudio, playSettlementChime } from "@/lib/chime";
+import { clearPayLink, keepScreenAwake, nativeInfo, presentPayLink, type NativeInfo } from "@/lib/native";
 
 const PRESETS = [100, 500, 1000];
 const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"];
@@ -39,11 +39,13 @@ interface Props {
 const msLeft = (iso: string) => new Date(iso).getTime() - Date.now();
 
 /**
- * Cashier keypad -> single-use pay node. Two ways to reach the payer:
- *  - NFC: the pay URL is written to a tag with Web NFC where the device supports it (optional extra).
- *  - Dynamic QR (always shown, works on any camera or QR-capable app): it refreshes itself, so the cashier never
- *    has to touch the screen while waiting. Each QR is a fresh single-use node; the previous one stays valid for
- *    its last seconds so a customer who is mid-scan is not cut off, and any of them being paid completes the sale.
+ * Cashier keypad -> single-use pay node. Two ways to reach the payer, always both:
+ *  - Tap: in the Android app this phone itself acts as an NFC tag (Host Card Emulation) carrying the pay link, so a
+ *    customer just holds their phone to the back of this one. In Chrome on Android it writes a tag with Web NFC.
+ *  - Dynamic QR (always shown, works on any camera): it refreshes itself, so the cashier never has to touch the
+ *    screen while waiting. Each QR is a fresh single-use node; the previous one stays valid for its last seconds so
+ *    a customer who is mid-scan is not cut off, and any of them being paid completes the sale. In the app, the
+ *    tap payload follows the QR, so a tap and a scan always carry the same, current link.
  */
 export function TerminalPanel({ merchantId, merchantName, category, routing, onActiveChange }: Props) {
   const [amount, setAmount] = useState("");
@@ -59,6 +61,9 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
   const [now, setNow] = useState(() => Date.now());
   const [done, setDone] = useState<Transaction | null>(null);
   const [nfc, setNfc] = useState<NfcState>({ kind: "idle" });
+  const [native, setNative] = useState<NativeInfo | null>(null); // set only inside the Android app
+  const [tapped, setTapped] = useState(false); // a customer's phone has just read our tag
+  const [processing, setProcessing] = useState(false); // a customer is completing payment at the rail
   const toneFired = useRef(false);
   const nfcAbort = useRef<AbortController | null>(null);
   const tokens = useRef<Set<string>>(new Set());
@@ -108,30 +113,61 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
     [cancelNode],
   );
 
-  // Payment listener over ALL live nodes (+ 2s polling fallback in case Realtime is not enabled).
+  // Payment detection over ALL live nodes, by polling the status API every 1.5s (no database credentials in the browser).
   const listening = !!tx && !done;
   useEffect(() => {
     if (!listening) return;
-    const channel = supabase
-      .channel(`terminal-${merchantId}`)
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "transactions", filter: `merchant_id=eq.${merchantId}` }, (payload) => {
-        const row = payload.new as Transaction;
-        if (tokens.current.has(row.token) && isPaid(row.status)) finish(row);
-      })
-      .subscribe();
-
+    let stopped = false;
     const poll = setInterval(async () => {
       const list = [...tokens.current];
       if (!list.length) return;
-      const { data } = await supabase.from("transactions").select("*").in("token", list).in("status", ["SUCCESS", "SETTLED"]).limit(1);
-      if (data?.[0]) finish(data[0] as Transaction);
-    }, 2000);
-
+      try {
+        const res = await fetch(`/api/transactions/status?tokens=${list.join(",")}`, { cache: "no-store" });
+        if (!res.ok || stopped) return;
+        const rows = (await res.json()) as Transaction[];
+        const paid = rows.find((r) => isPaid(r.status));
+        if (paid) return finish(paid);
+        setProcessing(rows.some((r) => r.status === "PROCESSING"));
+      } catch {
+        /* transient network error: the next poll retries */
+      }
+    }, 1500);
     return () => {
+      stopped = true;
       clearInterval(poll);
-      supabase.removeChannel(channel);
     };
-  }, [listening, merchantId, finish]);
+  }, [listening, finish]);
+
+  // Android app: learn the NFC state, refresh it when the cashier returns from Settings, and hear customer taps.
+  useEffect(() => {
+    const refresh = () => setNative(nativeInfo());
+    refresh();
+    const onTap = () => setTapped(true);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("twopay:tap", onTap);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+      window.removeEventListener("twopay:tap", onTap);
+    };
+  }, []);
+
+  // While a sale is waiting, keep the screen on (tag emulation needs it) and present the CURRENT pay link to taps.
+  const nfcReady = native?.nfc === "READY";
+  const inApp = !!native; // a stable boolean: `native` itself is a fresh object on every refresh
+  useEffect(() => {
+    if (!listening || !inApp) return;
+    keepScreenAwake(true);
+    return () => {
+      keepScreenAwake(false);
+      clearPayLink();
+    };
+  }, [listening, inApp]);
+  const currentToken = tx?.token;
+  useEffect(() => {
+    if (listening && nfcReady && currentToken) presentPayLink(`${window.location.origin}/pay/${currentToken}`);
+  }, [listening, nfcReady, currentToken]);
 
   // Clock for the countdown / expiry display
   useEffect(() => {
@@ -167,7 +203,7 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
 
   // Automatic refresh: swap the QR REFRESH_LEAD_S before the current node expires; retry quickly if that fails.
   useEffect(() => {
-    if (!tx || done || paused) return;
+    if (!tx || done || paused || processing) return; // never swap the code under a customer who is mid-payment
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
     const attempt = async () => {
@@ -181,7 +217,7 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [tx, done, paused, rotate]);
+  }, [tx, done, paused, processing, rotate]);
 
   // Leaving the screen mid-sale retires any unopened nodes.
   useEffect(
@@ -225,6 +261,8 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
     setPaused(false);
     setRefreshFailed(false);
     setRotations(0);
+    setTapped(false);
+    setProcessing(false);
     rotationsRef.current = 0;
     toneFired.current = false;
   };
@@ -264,7 +302,10 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
       setNow(Date.now());
       setNodes([data]);
       setTx(data);
-      void writeNfc(`${window.location.origin}/pay/${data.token}`);
+      setTapped(false);
+      setProcessing(false);
+      // In the app the tap payload is presented by an effect (and follows every QR refresh); Web NFC is the browser path.
+      if (!native) void writeNfc(`${window.location.origin}/pay/${data.token}`);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -297,7 +338,7 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
           {Number(done.amount).toLocaleString("en-US", { minimumFractionDigits: 2 })} {done.currency}
         </p>
         <p className="mt-6 text-2xl font-semibold">
-          Authorized in {((done.latency_ms ?? 0) / 1000).toFixed(1)}s via {done.rail}
+          {done.latency_ms != null ? `Authorized in ${(done.latency_ms / 1000).toFixed(1)}s via ${done.rail}` : `Paid via ${done.rail}`}
         </p>
         <p className="mt-1 text-emerald-100">{merchantName}</p>
         <button onClick={() => reset()} className="mt-10 inline-flex items-center gap-2 rounded-2xl bg-white px-8 py-4 text-lg font-bold text-emerald-700">
@@ -387,7 +428,11 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
             </div>
           )}
 
-          <NfcStatus state={nfc} onRetry={() => writeNfc(payUrl)} />
+          {native ? (
+            <TapStatus nfc={native.nfc} tapped={tapped} processing={processing} onSettings={() => window.TwoPayNative?.openNfcSettings()} />
+          ) : (
+            <NfcStatus state={nfc} onRetry={() => writeNfc(payUrl)} />
+          )}
 
           <div className="relative">
             <div className={`rounded-2xl bg-white p-4 transition-opacity ${expired ? "opacity-20" : ""}`}>
@@ -405,7 +450,13 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
             )}
           </div>
 
-          {!expired && (
+          {processing && (
+            <div className="flex w-full items-center justify-center gap-2 rounded-xl bg-sky-500/10 px-3 py-2 text-sm font-medium text-sky-300">
+              <Loader2 className="h-4 w-4 animate-spin" /> Customer is completing the payment…
+            </div>
+          )}
+
+          {!expired && !processing && (
             <div className="w-full space-y-1.5">
               <div className="h-1.5 w-full overflow-hidden rounded bg-slate-800">
                 <div className="h-full bg-brand transition-[width] duration-500" style={{ width: `${Math.min(100, (secondsLeft / NODE_TTL_S) * 100)}%` }} />
@@ -456,6 +507,36 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Tap-to-pay status inside the Android app, where this phone itself is the "tag" the customer taps. */
+function TapStatus({ nfc, tapped, processing, onSettings }: { nfc: NativeInfo["nfc"]; tapped: boolean; processing: boolean; onSettings: () => void }) {
+  const base = "flex w-full items-center justify-center gap-2 rounded-xl px-3 py-3 text-sm font-medium";
+  if (nfc === "UNSUPPORTED") return <div className={`${base} bg-slate-800 text-slate-400`}>This phone can&apos;t do tap-to-pay — customers scan the QR code below.</div>;
+  if (nfc === "DISABLED") {
+    return (
+      <button onClick={onSettings} className={`${base} bg-amber-500/10 text-amber-300`}>
+        <Nfc className="h-4 w-4" /> NFC is off — tap here to turn it on for tap-to-pay
+      </button>
+    );
+  }
+  if (processing) return <div className={`${base} bg-sky-500/10 text-sky-300`}>Customer is approving the payment…</div>;
+  if (tapped) {
+    return (
+      <div className={`${base} bg-emerald-500/10 text-emerald-300`}>
+        <Check className="h-4 w-4" /> Customer tapped — waiting for them to approve
+      </div>
+    );
+  }
+  return (
+    <div className={`${base} bg-brand/10 text-emerald-200`}>
+      <span className="relative flex h-3 w-3">
+        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-brand opacity-70" />
+        <span className="relative inline-flex h-3 w-3 rounded-full bg-brand" />
+      </span>
+      Tap to pay ready — hold the customer&apos;s phone to the back of this phone
     </div>
   );
 }

@@ -3,52 +3,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity, Banknote, Coins, Gauge, Landmark, ShieldCheck } from "lucide-react";
 import { Logo } from "@/components/Logo";
-import { supabase } from "@/lib/supabase";
-import { isPaid, MERCHANT_PUBLIC_COLUMNS, type Merchant, type Transaction } from "@/lib/types";
+import { isPaid, type Merchant } from "@/lib/types";
+import { useOverview } from "@/lib/use-overview";
 import { RailBadge, StatusBadge } from "@/components/RailBadge";
 
 const fmt = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-function startOfToday() {
-  const d = new Date();
-  d.setHours(0, 0, 0, 0);
-  return d.toISOString();
-}
-
 export default function DashboardPage() {
-  const [txs, setTxs] = useState<Transaction[]>([]);
-  const [merchants, setMerchants] = useState<Record<string, Merchant>>({});
+  const { transactions: txs, merchants: merchantList, error, loaded } = useOverview(5000);
+  const merchants = useMemo(() => Object.fromEntries(merchantList.map((x) => [x.id, x])) as Record<string, Merchant>, [merchantList]);
   const [view, setView] = useState<"live" | "compliance">("live");
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      const [{ data: t }, { data: m }] = await Promise.all([
-        supabase.from("transactions").select("*").gte("created_at", startOfToday()).order("created_at", { ascending: false }).limit(200),
-        supabase.from("merchants").select(MERCHANT_PUBLIC_COLUMNS),
-      ]);
-      if (cancelled) return;
-      setTxs((t as Transaction[]) ?? []);
-      setMerchants(Object.fromEntries(((m as Merchant[]) ?? []).map((x) => [x.id, x])));
-    };
-    load();
-
-    const channel = supabase
-      .channel("dashboard-tx")
-      .on("postgres_changes", { event: "*", schema: "public", table: "transactions" }, (payload) => {
-        const row = payload.new as Transaction;
-        setTxs((prev) => [row, ...prev.filter((p) => p.id !== row.id)].slice(0, 200));
-      })
-      .subscribe();
-    const poll = setInterval(load, 5000); // fallback if Realtime is unavailable
-
-    return () => {
-      cancelled = true;
-      clearInterval(poll);
-      supabase.removeChannel(channel);
-    };
-  }, []);
-
   const stats = useMemo(() => {
     const ok = txs.filter((t) => isPaid(t.status));
     const lat = ok.map((t) => t.latency_ms).filter((l): l is number => l != null);
@@ -95,6 +59,9 @@ export default function DashboardPage() {
           ))}
         </div>
       </header>
+
+      {error && <div className="mb-4 rounded-lg bg-rose-500/15 p-3 text-sm text-rose-300">{error}</div>}
+      {!loaded && <div className="mb-4 text-sm text-slate-500">Loading…</div>}
 
       <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {cards.map(({ label, value, sub, icon: Icon, good }) => (

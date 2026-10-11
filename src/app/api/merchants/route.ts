@@ -1,25 +1,38 @@
 import { NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
-import { getAdminClient } from "@/lib/supabase-admin";
-import { MERCHANT_PUBLIC_COLUMNS, type Merchant } from "@/lib/types";
+import { AdminConfigError, getAdminClient } from "@/lib/supabase-admin";
+import { requireSession, isAdminPhone } from "@/lib/guard";
+import { authEnforced } from "@/lib/auth";
+import type { Merchant } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
-/** Merchants with their public fields plus the institution names of their active routing (never account numbers). */
+/**
+ * Merchants with their public fields plus the institution NAMES of their active routing (never account numbers).
+ * Test mode lists everyone. When enforced, a merchant sees only themselves and an admin sees all.
+ */
 export async function GET() {
-  const { data, error } = await supabase.from("merchants").select(MERCHANT_PUBLIC_COLUMNS).order("business_name");
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  const guard = await requireSession();
+  if (!guard.ok) return guard.res;
 
-  const merchants = (data ?? []) as Merchant[];
   try {
-    const { data: routing } = await getAdminClient().from("merchants").select("id, active_bank, active_wallet");
-    const byId = new Map((routing ?? []).map((r) => [r.id as string, r]));
-    for (const m of merchants) {
-      const r = byId.get(m.id);
-      if (r) m.routing = { bank: r.active_bank?.institution ?? null, wallet: r.active_wallet?.institution ?? null };
+    let query = getAdminClient()
+      .from("merchants")
+      .select("id, business_name, category, terminal_id, location, active_bank, active_wallet")
+      .order("business_name");
+    if (authEnforced() && !isAdminPhone(guard.session?.ph)) query = query.eq("id", guard.session!.mid);
+
+    const { data, error } = await query;
+    if (error) {
+      console.error("[merchants GET]", error.message);
+      return NextResponse.json({ error: "Could not load merchants" }, { status: 500 });
     }
-  } catch {
-    /* routing stays undefined: the server re-checks it when a pay node is created */
+    const merchants: Merchant[] = (data ?? []).map(({ active_bank, active_wallet, ...pub }) => ({
+      ...(pub as Omit<Merchant, "routing">),
+      routing: { bank: active_bank?.institution ?? null, wallet: active_wallet?.institution ?? null },
+    }));
+    return NextResponse.json(merchants, { headers: { "Cache-Control": "no-store" } });
+  } catch (e) {
+    if (e instanceof AdminConfigError) return NextResponse.json({ error: "Server misconfigured" }, { status: 500 });
+    throw e;
   }
-  return NextResponse.json(merchants);
 }

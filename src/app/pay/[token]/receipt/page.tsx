@@ -6,7 +6,7 @@ import { Logo } from "@/components/Logo";
 import { fmt, formatEAT } from "@/lib/format";
 import type { ReceiptView, ServedAd } from "@/lib/types";
 
-type State = { kind: "loading" } | { kind: "ready"; receipt: ReceiptView } | { kind: "error"; message: string };
+type State = { kind: "loading" } | { kind: "confirming" } | { kind: "ready"; receipt: ReceiptView } | { kind: "error"; message: string };
 
 function mapsHref(loc: string): string {
   return /^https?:\/\//i.test(loc) ? loc : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc)}`;
@@ -87,22 +87,41 @@ export default function ReceiptPage({ params }: { params: Promise<{ token: strin
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/pay/${token}/receipt`)
-      .then(async (r) => {
+    let timer: ReturnType<typeof setTimeout>;
+    const startedAt = Date.now();
+    const CONFIRM_FOR_MS = 120_000; // the rail's confirmation normally lands within seconds of the payer returning
+
+    const load = async () => {
+      try {
+        const r = await fetch(`/api/pay/${token}/receipt`, { cache: "no-store" });
         const d = await r.json();
         if (cancelled) return;
-        if (!r.ok) {
-          setState({
-            kind: "error",
-            message: r.status === 409 ? "This payment has not been completed yet." : r.status === 404 ? "Receipt not found." : "Could not load your receipt.",
-          });
+        if (r.ok) return setState({ kind: "ready", receipt: d as ReceiptView });
+        // The payer is back from their bank/wallet before the rail has confirmed: keep checking for a while.
+        if (r.status === 409 && d.status === "PROCESSING" && Date.now() - startedAt < CONFIRM_FOR_MS) {
+          setState({ kind: "confirming" });
+          timer = setTimeout(load, 2000);
           return;
         }
-        setState({ kind: "ready", receipt: d as ReceiptView });
-      })
-      .catch(() => !cancelled && setState({ kind: "error", message: "Cannot reach 2Pay." }));
+        setState({
+          kind: "error",
+          message:
+            r.status === 409
+              ? d.status === "PROCESSING"
+                ? "We haven't received confirmation yet. If money left your account, it will be confirmed shortly. Keep this page or check with the merchant."
+                : "This payment has not been completed."
+              : r.status === 404
+                ? "Receipt not found."
+                : "Could not load your receipt.",
+        });
+      } catch {
+        if (!cancelled) setState({ kind: "error", message: "Cannot reach 2Pay." });
+      }
+    };
+    void load();
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, [token]);
 
@@ -140,6 +159,14 @@ export default function ReceiptPage({ params }: { params: Promise<{ token: strin
         {state.kind === "loading" && (
           <div className="flex flex-1 items-center justify-center gap-2 text-slate-500">
             <Loader2 className="h-5 w-5 animate-spin" /> Loading receipt…
+          </div>
+        )}
+
+        {state.kind === "confirming" && (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center text-slate-600">
+            <Loader2 className="h-10 w-10 animate-spin text-emerald-600" />
+            <h1 className="text-lg font-semibold text-slate-800">Confirming your payment…</h1>
+            <p className="max-w-xs text-sm">Your bank or wallet is confirming the payment. This usually takes a few seconds. Please keep this page open.</p>
           </div>
         )}
 
