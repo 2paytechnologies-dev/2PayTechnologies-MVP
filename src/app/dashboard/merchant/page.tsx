@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { BarChart3, CalendarClock, Megaphone, Nfc } from "lucide-react";
+import Link from "next/link";
+import { BarChart3, CalendarClock, Megaphone, Nfc, Settings } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import type { Merchant } from "@/lib/types";
 import { TerminalPanel } from "@/components/TerminalPanel";
@@ -44,6 +45,9 @@ export default function MerchantPortalPage() {
         <div className="flex items-center gap-2 text-brand">
           <Logo /> <h1 className="text-xl font-bold text-white">2Pay Merchant Portal</h1>
         </div>
+        <Link href="/dashboard/settings" className="ml-auto inline-flex items-center gap-1.5 text-sm text-slate-400 hover:text-slate-200">
+          <Settings className="h-4 w-4" /> Settlement routing
+        </Link>
         <select
           value={merchantId}
           onChange={(e) => setMerchantId(e.target.value)}
@@ -79,7 +83,7 @@ export default function MerchantPortalPage() {
         <>
           {/* Terminal stays mounted so an in-flight sale survives tab switches. */}
           <div hidden={tab !== "terminal"}>
-            <TerminalPanel key={merchant.id} merchantId={merchant.id} merchantName={merchant.business_name} category={merchant.category} onActiveChange={setSaleActive} />
+            <TerminalPanel key={merchant.id} merchantId={merchant.id} merchantName={merchant.business_name} category={merchant.category} routing={merchant.routing} onActiveChange={setSaleActive} />
           </div>
           {tab === "lookback" && <LookbackTab key={merchant.id} merchant={merchant} />}
           {tab === "briefing" && <BriefingTab key={merchant.id} merchant={merchant} />}

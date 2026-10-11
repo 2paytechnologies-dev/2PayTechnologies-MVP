@@ -1,34 +1,55 @@
 import { NextResponse } from "next/server";
-import { supabase } from "@/lib/supabase";
 import { feeBreakdown } from "@/lib/fee";
-import { getAdminClient } from "@/lib/supabase-admin";
+import { AdminConfigError, getAdminClient } from "@/lib/supabase-admin";
+import { isUuid, toMasked, type SavedAccount } from "@/lib/settlement";
 import { nodeFeeContext } from "@/lib/watchdog";
 
 export const dynamic = "force-dynamic";
 
-/** Create a PENDING transaction (dynamic pay node) with a 90s TTL and a node-priced orchestration fee. */
+/**
+ * Create a PENDING transaction (dynamic pay node) with a 90s TTL and a node-priced orchestration fee.
+ * The merchant's active bank/wallet are snapshotted (masked) onto the row here, server-side, so the payer
+ * can only ever settle through institutions the merchant has enabled.
+ */
 export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
   const amount = Number(body?.amount);
   const merchantId = body?.merchant_id;
 
-  if (!merchantId || !Number.isFinite(amount) || amount <= 0 || amount > 1_000_000) {
+  if (!isUuid(merchantId) || !Number.isFinite(amount) || amount <= 0 || amount > 1_000_000) {
     return NextResponse.json({ error: "Invalid merchant or amount" }, { status: 400 });
   }
-
   const rounded = Math.round(amount * 100) / 100;
 
-  // F_t needs the node's risk/traffic/loyalty. Without the service-role key (or on any lookup error)
-  // the node is priced neutrally, so a missing key never blocks a sale.
-  let ctx = { risk: 0, traffic: 0, credit: 0 };
+  let admin;
   try {
-    ctx = await nodeFeeContext(getAdminClient(), merchantId);
-  } catch {
-    /* neutral pricing */
+    admin = getAdminClient();
+  } catch (e) {
+    if (e instanceof AdminConfigError) return NextResponse.json({ error: "Server misconfigured" }, { status: 500 });
+    throw e;
   }
+
+  const { data: merchant, error: mErr } = await admin.from("merchants").select("id, active_bank, active_wallet").eq("id", merchantId).maybeSingle();
+  if (mErr) {
+    console.error("[transactions] merchant lookup:", mErr.message);
+    return NextResponse.json({ error: "Could not load merchant" }, { status: 500 });
+  }
+  if (!merchant) return NextResponse.json({ error: "Unknown merchant" }, { status: 404 });
+
+  const bank = merchant.active_bank as SavedAccount | null;
+  const wallet = merchant.active_wallet as SavedAccount | null;
+  if (!bank && !wallet) {
+    return NextResponse.json(
+      { error: "No settlement account configured. Add and activate a bank or wallet in Settings first.", code: "NO_ACTIVE_ROUTING" },
+      { status: 409 },
+    );
+  }
+
+  // F_t needs the node's risk/traffic/loyalty; a lookup failure prices the node neutrally.
+  const ctx = await nodeFeeContext(admin, merchantId);
   const { fee } = feeBreakdown({ volume: rounded, ...ctx });
 
-  const { data, error } = await supabase
+  const { data, error } = await admin
     .from("transactions")
     .insert({
       merchant_id: merchantId,
@@ -36,10 +57,15 @@ export async function POST(req: Request) {
       expected_amount: rounded,
       fee_ft: fee,
       expires_at: new Date(Date.now() + 90_000).toISOString(),
+      routed_bank: bank ? toMasked(bank) : null,
+      routed_wallet: wallet ? toMasked(wallet) : null,
     })
     .select()
     .single();
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) {
+    console.error("[transactions] insert:", error.message);
+    return NextResponse.json({ error: "Could not create pay node" }, { status: 500 });
+  }
   return NextResponse.json(data, { status: 201 });
 }

@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { createHmac } from "node:crypto";
 import { AdminConfigError, getAdminClient } from "@/lib/supabase-admin";
 import { recordWatchdogEvent, safeEqual } from "@/lib/watchdog";
-import { RAILS, type Rail } from "@/lib/types";
+import { BANKS, WALLETS } from "@/lib/constants";
+import type { Rail } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -44,7 +45,7 @@ export async function POST(req: Request) {
   const status = typeof body.status === "string" ? body.status.trim().toUpperCase() : "";
   const settledAmount = Number(body.settled_amount);
   const railRaw = typeof body.rail === "string" ? body.rail.trim().toLowerCase() : "";
-  const rail: Rail | undefined = RAILS.find((r) => r.toLowerCase() === railRaw);
+  const rail: Rail | undefined = [...BANKS, ...WALLETS].find((r) => r.toLowerCase() === railRaw);
 
   if (!UUID.test(token) || !arifpayRef || !status) {
     return NextResponse.json({ error: "transaction_token, arifpay_ref and status are required" }, { status: 400 });

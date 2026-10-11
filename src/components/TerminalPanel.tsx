@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
-import { Check, CheckCircle2, Copy, Delete, Loader2, Nfc, RotateCcw } from "lucide-react";
+import Link from "next/link";
+import { Check, CheckCircle2, Copy, Delete, Loader2, Nfc, RotateCcw, Route, TriangleAlert } from "lucide-react";
 import { supabase } from "@/lib/supabase";
 import { isPaid, type Transaction } from "@/lib/types";
 import { primeAudio, playSettlementChime } from "@/lib/chime";
@@ -22,6 +23,8 @@ interface Props {
   merchantId: string;
   merchantName?: string;
   category?: string;
+  /** Active settlement institutions for this merchant (undefined = unknown; the server re-checks on create). */
+  routing?: { bank: string | null; wallet: string | null };
   /** Fires true while a pay node is live, so the host can lock its merchant picker. */
   onActiveChange?: (active: boolean) => void;
 }
@@ -30,7 +33,7 @@ interface Props {
  * Cashier keypad -> single-use pay node. Delivery is tap-first: the pay URL is written to an NFC tag
  * with Web NFC where available, and the dynamic QR is always shown as the fallback.
  */
-export function TerminalPanel({ merchantId, merchantName, category, onActiveChange }: Props) {
+export function TerminalPanel({ merchantId, merchantName, category, routing, onActiveChange }: Props) {
   const [amount, setAmount] = useState("");
   const [tx, setTx] = useState<Transaction | null>(null);
   const [busy, setBusy] = useState(false);
@@ -173,6 +176,9 @@ export function TerminalPanel({ merchantId, merchantName, category, onActiveChan
 
   const expired = !!tx && !done && secondsLeft === 0;
   const amountNum = Number(amount);
+  const noRouting = !!routing && !routing.bank && !routing.wallet;
+  const routingLabel = routing ? [routing.bank, routing.wallet].filter(Boolean).join(" • ") : "";
+  const txRoutingLabel = tx ? [tx.routed_bank?.institution, tx.routed_wallet?.institution].filter(Boolean).join(" • ") : "";
 
   if (done) {
     return (
@@ -232,9 +238,26 @@ export function TerminalPanel({ merchantId, merchantName, category, onActiveChan
             ))}
           </div>
 
+          {noRouting ? (
+            <Link
+              href="/dashboard/settings"
+              className="flex items-center justify-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-200"
+            >
+              <TriangleAlert className="h-4 w-4 shrink-0" /> No settlement account set — configure bank &amp; wallet routing
+            </Link>
+          ) : (
+            routing && (
+              <div className="flex items-center justify-center gap-2 rounded-xl bg-slate-900 px-3 py-2 text-sm text-slate-300" aria-label="Settlement routing">
+                <Route className="h-4 w-4 shrink-0 text-brand" />
+                <span className="text-slate-500">Routing to:</span>
+                <span className="font-medium">{routingLabel}</span>
+              </div>
+            )
+          )}
+
           <button
             onClick={generate}
-            disabled={busy || !(amountNum > 0) || !merchantId}
+            disabled={busy || !(amountNum > 0) || !merchantId || noRouting}
             className="flex items-center justify-center gap-2 rounded-2xl bg-brand py-4 text-lg font-bold text-slate-950 transition disabled:opacity-40"
           >
             {busy ? <Loader2 className="h-5 w-5 animate-spin" /> : <Nfc className="h-5 w-5" />}
@@ -250,6 +273,12 @@ export function TerminalPanel({ merchantId, merchantName, category, onActiveChan
               {Number(tx.amount).toLocaleString("en-US", { minimumFractionDigits: 2 })} ETB
             </div>
           </div>
+
+          {txRoutingLabel && (
+            <div className="flex items-center gap-2 text-xs text-slate-400">
+              <Route className="h-3.5 w-3.5 text-brand" /> Routing to: <span className="font-medium text-slate-200">{txRoutingLabel}</span>
+            </div>
+          )}
 
           <NfcStatus state={nfc} onRetry={() => writeNfc(payUrl)} />
 

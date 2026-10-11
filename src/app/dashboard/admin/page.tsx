@@ -6,7 +6,7 @@ import { Logo } from "@/components/Logo";
 import { supabase } from "@/lib/supabase";
 import { LATENCY_TARGET_S } from "@/lib/fee";
 import { eatDateKey, eatDayStartISO, fmt } from "@/lib/format";
-import { isPaid, type Merchant, type Transaction, type WatchdogEvent } from "@/lib/types";
+import { isPaid, MERCHANT_PUBLIC_COLUMNS, type Merchant, type Transaction, type WatchdogEvent } from "@/lib/types";
 import { WatchdogFeed } from "@/components/admin/WatchdogFeed";
 import { FeeInspector } from "@/components/admin/FeeInspector";
 
@@ -28,7 +28,7 @@ export default function AdminHubPage() {
       const [t, e, m] = await Promise.all([
         supabase.from("transactions").select("*").gte("created_at", since).order("created_at", { ascending: false }).limit(TX_CAP),
         supabase.from("watchdog_events").select("*").order("created_at", { ascending: false }).limit(EVENT_CAP),
-        supabase.from("merchants").select("*").order("business_name"),
+        supabase.from("merchants").select(MERCHANT_PUBLIC_COLUMNS).order("business_name"),
       ]);
       if (cancelled) return;
       setTxError(t.error ? t.error.message : null);

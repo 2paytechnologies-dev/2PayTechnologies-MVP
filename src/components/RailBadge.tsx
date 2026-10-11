@@ -1,10 +1,5 @@
+import { isBank, isWallet } from "@/lib/constants";
 import type { Rail, Status } from "@/lib/types";
-
-const railStyle: Record<Rail, string> = {
-  "EthioPay-IPS": "bg-sky-500/15 text-sky-300 ring-sky-500/30",
-  Telebirr: "bg-amber-500/15 text-amber-300 ring-amber-500/30",
-  "CBE Birr": "bg-fuchsia-500/15 text-fuchsia-300 ring-fuchsia-500/30",
-};
 
 const statusStyle: Record<Status, string> = {
   PENDING: "bg-slate-500/15 text-slate-300 ring-slate-500/30",
@@ -15,8 +10,15 @@ const statusStyle: Record<Status, string> = {
 
 const base = "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset";
 
+/** Banks are sky, wallets amber; anything else (legacy rails such as "EthioPay-IPS") is neutral. */
+function railStyle(rail: Rail): string {
+  if (isBank(rail)) return "bg-sky-500/15 text-sky-300 ring-sky-500/30";
+  if (isWallet(rail)) return "bg-amber-500/15 text-amber-300 ring-amber-500/30";
+  return "bg-slate-500/15 text-slate-300 ring-slate-500/30";
+}
+
 export function RailBadge({ rail }: { rail: Rail }) {
-  return <span className={`${base} ${railStyle[rail]}`}>{rail}</span>;
+  return <span className={`${base} ${railStyle(rail)}`}>{rail}</span>;
 }
 
 export function StatusBadge({ status }: { status: Status }) {

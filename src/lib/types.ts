@@ -1,7 +1,12 @@
 /** PENDING -> SUCCESS (customer authorized) -> SETTLED (Arifpay confirmed via webhook). */
 export type Status = "PENDING" | "SUCCESS" | "SETTLED" | "FAILED";
-export type Rail = "EthioPay-IPS" | "Telebirr" | "CBE Birr";
-export const RAILS: Rail[] = ["EthioPay-IPS", "Telebirr", "CBE Birr"];
+import type { MaskedAccount } from "@/lib/settlement";
+
+/** The institution the payer settled through (e.g. "Awash Bank", "Telebirr"). Legacy rows hold "EthioPay-IPS" etc. */
+export type Rail = string;
+export type SettlementMethod = "BANK" | "WALLET";
+/** Masked snapshot of a merchant's active account, stored on the transaction. */
+export type RoutedAccount = MaskedAccount;
 
 /** Statuses where the customer has authorized and funds are moving or moved. */
 export const PAID_STATUSES: Status[] = ["SUCCESS", "SETTLED"];
@@ -16,7 +21,12 @@ export interface Merchant {
   category: "Fuel" | "Retail";
   terminal_id: string;
   location: string | null;
+  /** Institution names of the active routing; undefined when the server could not read it. */
+  routing?: { bank: string | null; wallet: string | null };
 }
+
+/** Columns of `merchants` readable with the public anon key (saved/active accounts are server-only). */
+export const MERCHANT_PUBLIC_COLUMNS = "id, business_name, category, terminal_id, location";
 
 export interface Transaction {
   id: string;
@@ -35,6 +45,9 @@ export interface Transaction {
   settled_amount: number | null;
   settled_at: string | null;
   arifpay_ref: string | null;
+  routed_bank: RoutedAccount | null;
+  routed_wallet: RoutedAccount | null;
+  settlement_method: SettlementMethod | null;
 }
 
 /** Shape returned by the open_transaction() RPC. */
@@ -48,6 +61,8 @@ export interface PayView {
   merchant_name: string;
   merchant_category: string;
   terminal_id: string;
+  routed_bank: RoutedAccount | null;
+  routed_wallet: RoutedAccount | null;
 }
 
 export type CampaignStatus = "ACTIVE" | "PAUSED" | "EXHAUSTED";

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Activity, Banknote, Coins, Gauge, Landmark, ShieldCheck } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import { supabase } from "@/lib/supabase";
-import { isPaid, type Merchant, type Transaction } from "@/lib/types";
+import { isPaid, MERCHANT_PUBLIC_COLUMNS, type Merchant, type Transaction } from "@/lib/types";
 import { RailBadge, StatusBadge } from "@/components/RailBadge";
 
 const fmt = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -25,7 +25,7 @@ export default function DashboardPage() {
     const load = async () => {
       const [{ data: t }, { data: m }] = await Promise.all([
         supabase.from("transactions").select("*").gte("created_at", startOfToday()).order("created_at", { ascending: false }).limit(200),
-        supabase.from("merchants").select("*"),
+        supabase.from("merchants").select(MERCHANT_PUBLIC_COLUMNS),
       ]);
       if (cancelled) return;
       setTxs((t as Transaction[]) ?? []);

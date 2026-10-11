@@ -53,6 +53,7 @@ export default function TerminalPage() {
           merchantId={merchantId}
           merchantName={merchant?.business_name}
           category={merchant?.category}
+          routing={merchant?.routing}
           onActiveChange={setLocked}
         />
       )}

@@ -2,9 +2,9 @@
 
 import { use, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, Clock, Fingerprint, Loader2, ShieldCheck, XCircle } from "lucide-react";
-import type { PayView, Rail } from "@/lib/types";
-import { RAILS } from "@/lib/types";
+import { CheckCircle2, ChevronRight, Clock, Landmark, Loader2, ShieldCheck, Smartphone, XCircle } from "lucide-react";
+import type { PayView } from "@/lib/types";
+import type { SettlementKind } from "@/lib/constants";
 import { RailBadge } from "@/components/RailBadge";
 
 type State =
@@ -24,8 +24,7 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
   const { token } = use(params);
   const router = useRouter();
   const [state, setState] = useState<State>({ kind: "loading" });
-  const [rail, setRail] = useState<Rail>("EthioPay-IPS");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<SettlementKind | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [secondsLeft, setSecondsLeft] = useState(0);
 
@@ -52,26 +51,34 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
     return () => clearInterval(id);
   }, [expiresAt]);
 
-  const authorize = async () => {
-    if (state.kind !== "ready") return;
-    setBusy(true);
+  /** Tapping a rail runs the simulated settlement. The server derives the institution from the pay node itself. */
+  const pay = async (method: SettlementKind) => {
+    if (state.kind !== "ready" || busy) return;
+    setBusy(method);
     setError(null);
     try {
       const res = await fetch(`/api/pay/${token}/authorize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rail }),
+        body: JSON.stringify({ method }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Authorization failed");
-      setState({ kind: "paid", latency: data.latency_ms, tx: { ...state.tx, rail } });
+      setState({ kind: "paid", latency: data.latency_ms, tx: { ...state.tx, rail: data.rail } });
       setTimeout(() => router.replace(`/pay/${token}/receipt`), 900); // brief confirmation, then the receipt
     } catch (e) {
       setError((e as Error).message);
-    } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
+
+  const options =
+    state.kind === "ready"
+      ? ([
+          state.tx.routed_bank && { method: "bank" as const, name: state.tx.routed_bank.institution, hint: "Bank transfer", Icon: Landmark, tone: "border-sky-500/40 bg-sky-500/10 text-sky-300" },
+          state.tx.routed_wallet && { method: "wallet" as const, name: state.tx.routed_wallet.institution, hint: "Mobile wallet", Icon: Smartphone, tone: "border-amber-500/40 bg-amber-500/10 text-amber-300" },
+        ].filter(Boolean) as { method: SettlementKind; name: string; hint: string; Icon: typeof Landmark; tone: string }[])
+      : [];
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center gap-5 p-5">
@@ -106,7 +113,7 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
               {state.tx.merchant_category} · {state.tx.terminal_id}
             </div>
             <div className="mt-5 text-5xl font-bold tabular-nums">
-              {state.tx.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+              {Number(state.tx.amount).toLocaleString("en-US", { minimumFractionDigits: 2 })}
               <span className="ml-2 text-xl text-slate-400">{state.tx.currency}</span>
             </div>
             <div className="mt-1 text-xs uppercase tracking-wide text-slate-500">Amount locked</div>
@@ -115,32 +122,37 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-2">
-            {RAILS.map((r) => (
-              <button
-                key={r}
-                onClick={() => setRail(r)}
-                className={`rounded-xl border p-2 text-xs font-medium ${
-                  rail === r ? "border-brand bg-brand/10 text-white" : "border-slate-800 bg-slate-900 text-slate-400"
-                }`}
-              >
-                {r}
-              </button>
-            ))}
-          </div>
+          {options.length > 0 ? (
+            <div className="space-y-3">
+              <h2 className="text-center text-sm font-medium text-slate-300">Choose how you want to pay</h2>
+              {options.map(({ method, name, hint, Icon, tone }) => (
+                <button
+                  key={method}
+                  onClick={() => pay(method)}
+                  disabled={busy !== null}
+                  className={`flex w-full items-center gap-4 rounded-2xl border p-4 text-left transition active:scale-[0.99] disabled:opacity-60 ${tone}`}
+                >
+                  <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-slate-950/60">
+                    {busy === method ? <Loader2 className="h-6 w-6 animate-spin" /> : <Icon className="h-6 w-6" />}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-lg font-bold text-white">Pay via {name}</span>
+                    <span className="block text-xs opacity-80">{hint}</span>
+                  </span>
+                  <ChevronRight className="h-5 w-5 shrink-0 opacity-60" />
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-center text-sm text-amber-200">
+              This merchant has no payment method set up yet. Please ask the cashier to generate a new pay node.
+            </div>
+          )}
 
           {error && <div className="rounded-lg bg-rose-500/15 p-3 text-sm text-rose-300">{error}</div>}
 
-          <button
-            onClick={authorize}
-            disabled={busy}
-            className="flex items-center justify-center gap-2 rounded-2xl bg-brand py-5 text-lg font-bold text-slate-950 disabled:opacity-60"
-          >
-            {busy ? <Loader2 className="h-6 w-6 animate-spin" /> : <Fingerprint className="h-6 w-6" />}
-            Authorize with Biometrics / PIN
-          </button>
           <p className="text-center text-xs text-slate-500">
-            Simulated inherited authorization from your wallet. 2Pay never holds your funds.
+            Simulated inherited authorization from your wallet or bank app. 2Pay never holds your funds.
           </p>
         </>
       )}
@@ -150,8 +162,7 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
           <CheckCircle2 className="h-16 w-16 text-brand" />
           <h1 className="text-2xl font-bold">Payment authorized</h1>
           <p className="text-slate-300">
-            {state.tx.amount.toLocaleString("en-US", { minimumFractionDigits: 2 })} {state.tx.currency} to{" "}
-            {state.tx.merchant_name}
+            {Number(state.tx.amount).toLocaleString("en-US", { minimumFractionDigits: 2 })} {state.tx.currency} to {state.tx.merchant_name}
           </p>
           <RailBadge rail={state.tx.rail} />
           <p className="text-sm text-slate-400">Completed in {(state.latency / 1000).toFixed(1)}s</p>

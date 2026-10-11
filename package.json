@@ -8,12 +8,16 @@
     "start": "next start"
   },
   "dependencies": {
+    "@radix-ui/react-radio-group": "^1.4.8",
+    "@radix-ui/react-select": "^2.3.8",
     "@supabase/supabase-js": "^2.45.0",
+    "clsx": "^2.1.1",
     "lucide-react": "^0.460.0",
     "next": "^15.0.0",
     "qrcode.react": "^4.1.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "tailwind-merge": "^3.7.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
