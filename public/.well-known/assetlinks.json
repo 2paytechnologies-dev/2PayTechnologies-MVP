@@ -1,0 +1,10 @@
+﻿[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.twopay.merchant",
+      "sha256_cert_fingerprints": ["31:A6:AA:1A:E8:F8:EE:FC:3C:B2:C2:8D:9D:51:C3:68:B2:A4:59:35:0F:FC:B9:3D:D3:9C:98:13:69:EA:02:B9"]
+    }
+  }
+]

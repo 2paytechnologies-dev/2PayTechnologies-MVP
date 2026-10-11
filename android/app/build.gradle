@@ -1,0 +1,63 @@
+plugins {
+    id 'com.android.application'
+}
+
+// The Android app is a Trusted Web Activity: a thin shell that opens this site full-screen in Chrome's engine,
+// so every screen (terminal, dashboards, settings, ads) is the live web app and updates the moment you deploy.
+def siteHost = '2-pay-technologies-mvp.vercel.app'
+def launchPath = '/dashboard/merchant'
+
+// Signing: keystore.properties lives OUTSIDE the repo (default ~/.2pay-android/keystore.properties).
+def keystoreProps = new Properties()
+def keystoreFile = file(System.getenv('TWOPAY_KEYSTORE_PROPS') ?: "${System.getProperty('user.home')}/.2pay-android/keystore.properties")
+if (keystoreFile.exists()) {
+    keystoreFile.withInputStream { keystoreProps.load(it) }
+}
+
+android {
+    namespace 'com.twopay.merchant'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.twopay.merchant'
+        minSdk 21
+        targetSdk 34
+        versionCode 1
+        versionName '1.0.0'
+
+        manifestPlaceholders = [
+            hostName  : siteHost,
+            launchUrl : "https://${siteHost}${launchPath}",
+            webManifestUrl: "https://${siteHost}/manifest.webmanifest"
+        ]
+    }
+
+    signingConfigs {
+        release {
+            if (keystoreProps['storeFile']) {
+                storeFile file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            if (keystoreProps['storeFile']) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.5.0'
+}
