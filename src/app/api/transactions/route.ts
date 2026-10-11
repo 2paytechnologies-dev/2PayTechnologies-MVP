@@ -6,6 +6,13 @@ import { nodeFeeContext } from "@/lib/watchdog";
 
 export const dynamic = "force-dynamic";
 
+/** Postgres 42703 (undefined column) / PostgREST PGRST204 (column missing from schema cache): a migration has not been applied. */
+const isSchemaDrift = (e: { code?: string; message?: string }) => e.code === "42703" || e.code === "PGRST204" || /schema cache/i.test(e.message ?? "");
+const SCHEMA_DRIFT = {
+  error: "The database is missing the settlement-routing columns. Run supabase/multi_rail_routing.sql in the Supabase SQL editor, then try again.",
+  code: "SCHEMA_OUT_OF_DATE",
+};
+
 /**
  * Create a PENDING transaction (dynamic pay node) with a 90s TTL and a node-priced orchestration fee.
  * The merchant's active bank/wallet are snapshotted (masked) onto the row here, server-side, so the payer
@@ -31,7 +38,8 @@ export async function POST(req: Request) {
 
   const { data: merchant, error: mErr } = await admin.from("merchants").select("id, active_bank, active_wallet").eq("id", merchantId).maybeSingle();
   if (mErr) {
-    console.error("[transactions] merchant lookup:", mErr.message);
+    console.error("[transactions] merchant lookup:", mErr.code, mErr.message);
+    if (isSchemaDrift(mErr)) return NextResponse.json(SCHEMA_DRIFT, { status: 500 });
     return NextResponse.json({ error: "Could not load merchant" }, { status: 500 });
   }
   if (!merchant) return NextResponse.json({ error: "Unknown merchant" }, { status: 404 });
@@ -64,7 +72,8 @@ export async function POST(req: Request) {
     .single();
 
   if (error) {
-    console.error("[transactions] insert:", error.message);
+    console.error("[transactions] insert:", error.code, error.message);
+    if (isSchemaDrift(error)) return NextResponse.json(SCHEMA_DRIFT, { status: 500 });
     return NextResponse.json({ error: "Could not create pay node" }, { status: 500 });
   }
   return NextResponse.json(data, { status: 201 });
