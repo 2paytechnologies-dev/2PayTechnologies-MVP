@@ -2,9 +2,11 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { BarChart3, CalendarClock, Megaphone, Nfc, Settings } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { BarChart3, CalendarClock, LogIn, LogOut, Megaphone, Nfc, Settings } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import type { Merchant } from "@/lib/types";
+import { defaultMerchantId, fetchSession, type SessionInfo } from "@/lib/client-session";
 import { TerminalPanel } from "@/components/TerminalPanel";
 import { LookbackTab } from "@/components/merchant/LookbackTab";
 import { BriefingTab } from "@/components/merchant/BriefingTab";
@@ -24,6 +26,8 @@ export default function MerchantPortalPage() {
   const [tab, setTab] = useState<TabId>("terminal");
   const [saleActive, setSaleActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [session, setSession] = useState<SessionInfo | null>(null);
+  const router = useRouter();
 
   useEffect(() => {
     fetch("/api/merchants")
@@ -31,11 +35,21 @@ export default function MerchantPortalPage() {
       .then((d) => {
         if (Array.isArray(d) && d.length) {
           setMerchants(d);
-          setMerchantId(d[0].id);
+          void defaultMerchantId(d).then(setMerchantId);
         } else setError(d?.error ?? "No merchants found");
       })
       .catch(() => setError("Cannot reach API"));
   }, []);
+
+  useEffect(() => {
+    void fetchSession().then(setSession);
+  }, []);
+
+  const signOut = async () => {
+    await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+    router.push("/signin");
+    router.refresh();
+  };
 
   const merchant = merchants.find((m) => m.id === merchantId);
 
@@ -45,9 +59,20 @@ export default function MerchantPortalPage() {
         <div className="flex items-center gap-2 text-brand">
           <Logo /> <h1 className="text-xl font-bold text-white">2Pay Merchant Portal</h1>
         </div>
-        <Link href="/dashboard/settings" className="ml-auto inline-flex items-center gap-1.5 text-sm text-slate-400 hover:text-slate-200">
-          <Settings className="h-4 w-4" /> Settlement routing
-        </Link>
+        <div className="ml-auto flex items-center gap-4 text-sm">
+          <Link href="/dashboard/settings" className="inline-flex items-center gap-1.5 text-slate-400 hover:text-slate-200">
+            <Settings className="h-4 w-4" /> Settlement routing
+          </Link>
+          {session?.merchant ? (
+            <button onClick={signOut} className="inline-flex items-center gap-1.5 text-slate-400 hover:text-slate-200" title={`Signed in as ${session.merchant.business_name}`}>
+              <LogOut className="h-4 w-4" /> Sign out
+            </button>
+          ) : (
+            <Link href="/signin" className="inline-flex items-center gap-1.5 text-slate-400 hover:text-slate-200">
+              <LogIn className="h-4 w-4" /> Sign in
+            </Link>
+          )}
+        </div>
         <select
           value={merchantId}
           onChange={(e) => setMerchantId(e.target.value)}

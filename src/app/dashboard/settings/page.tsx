@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Check, Loader2, Route, TriangleAlert } from "lucide-react";
 import { Logo } from "@/components/Logo";
+import { defaultMerchantId } from "@/lib/client-session";
 import { AccountSection, type AccountRow } from "@/components/settings/AccountSection";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -39,7 +40,7 @@ export default function SettlementSettingsPage() {
       .then((d) => {
         if (Array.isArray(d) && d.length) {
           setMerchants(d);
-          setMerchantId(d[0].id);
+          void defaultMerchantId(d).then(setMerchantId);
         } else setError(d?.error ?? "No merchants found");
       })
       .catch(() => setError("Cannot reach API"));

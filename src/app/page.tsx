@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { Logo } from "@/components/Logo";
-import { Briefcase, LayoutDashboard, ShieldAlert, Smartphone, Store } from "lucide-react";
+import { Briefcase, LayoutDashboard, LogIn, ShieldAlert, Smartphone, Store } from "lucide-react";
 
 const links = [
   { href: "/terminal", icon: Store, title: "Merchant Terminal", body: "Cashier screen — generate a dynamic pay node." },
+  { href: "/signin", icon: LogIn, title: "Sign in / Register", body: "Merchant access with phone verification." },
   { href: "/dashboard/merchant", icon: Briefcase, title: "Merchant Portal", body: "Terminal, lookback, daily briefing and ad campaigns." },
   { href: "/dashboard/admin", icon: ShieldAlert, title: "Admin Intelligence Hub", body: "Network telemetry, Watchdog oracle and fee inspector." },
   { href: "/dashboard", icon: LayoutDashboard, title: "Executive Dashboard", body: "Live GMV, velocity, fees and compliance view." },

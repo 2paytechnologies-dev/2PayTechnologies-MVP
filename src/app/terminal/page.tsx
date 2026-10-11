@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Logo } from "@/components/Logo";
+import { defaultMerchantId } from "@/lib/client-session";
 import type { Merchant } from "@/lib/types";
 import { TerminalPanel } from "@/components/TerminalPanel";
 
@@ -17,7 +18,7 @@ export default function TerminalPage() {
       .then((d) => {
         if (Array.isArray(d) && d.length) {
           setMerchants(d);
-          setMerchantId(d[0].id);
+          void defaultMerchantId(d).then(setMerchantId);
         } else setError(d?.error ?? "No merchants found — run supabase/schema.sql");
       })
       .catch(() => setError("Cannot reach API"));
