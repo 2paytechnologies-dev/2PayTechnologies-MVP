@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Banknote, Gauge, Network, ShieldCheck, Zap } from "lucide-react";
+import { Banknote, Gauge, Network, ShieldCheck } from "lucide-react";
+import { Logo } from "@/components/Logo";
 import { supabase } from "@/lib/supabase";
 import { LATENCY_TARGET_S } from "@/lib/fee";
 import { eatDateKey, eatDayStartISO, fmt } from "@/lib/format";
@@ -84,7 +85,7 @@ export default function AdminHubPage() {
     <main className="mx-auto max-w-7xl space-y-6 p-4 sm:p-8">
       <header className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-brand">
-          <Zap className="h-5 w-5" />
+          <Logo />
           <h1 className="text-xl font-bold text-white">2Pay Admin Intelligence &amp; Compliance Hub</h1>
           <span className="ml-2 flex items-center gap-1 text-xs text-slate-400">
             <span className="h-2 w-2 animate-pulse rounded-full bg-brand" /> live

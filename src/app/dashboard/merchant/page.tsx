@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { BarChart3, CalendarClock, Megaphone, Nfc, Zap } from "lucide-react";
+import { BarChart3, CalendarClock, Megaphone, Nfc } from "lucide-react";
+import { Logo } from "@/components/Logo";
 import type { Merchant } from "@/lib/types";
 import { TerminalPanel } from "@/components/TerminalPanel";
 import { LookbackTab } from "@/components/merchant/LookbackTab";
@@ -41,7 +42,7 @@ export default function MerchantPortalPage() {
     <main className="mx-auto max-w-6xl p-4 sm:p-8">
       <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-brand">
-          <Zap className="h-5 w-5" /> <h1 className="text-xl font-bold text-white">2Pay Merchant Portal</h1>
+          <Logo /> <h1 className="text-xl font-bold text-white">2Pay Merchant Portal</h1>
         </div>
         <select
           value={merchantId}

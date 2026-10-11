@@ -1,7 +1,8 @@
 "use client";
 
 import { use, useEffect, useRef, useState } from "react";
-import { Download, Loader2, XCircle, Zap } from "lucide-react";
+import { Download, Loader2, XCircle } from "lucide-react";
+import { Logo } from "@/components/Logo";
 import { fmt, formatEAT } from "@/lib/format";
 import type { ReceiptView, ServedAd } from "@/lib/types";
 
@@ -161,7 +162,7 @@ export default function ReceiptPage({ params }: { params: Promise<{ token: strin
           <>
             <header className="flex flex-col items-center gap-1 pt-2 text-center">
               <div className="flex items-center gap-1.5 text-emerald-600">
-                <Zap className="h-6 w-6" fill="currentColor" />
+                <Logo />
                 <span className="text-2xl font-extrabold tracking-tight">2Pay</span>
               </div>
               <h1 className="text-lg font-semibold text-slate-700">Payment Receipt</h1>

@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { Briefcase, LayoutDashboard, ShieldAlert, Smartphone, Store, Zap } from "lucide-react";
+import { Logo } from "@/components/Logo";
+import { Briefcase, LayoutDashboard, ShieldAlert, Smartphone, Store } from "lucide-react";
 
 const links = [
   { href: "/terminal", icon: Store, title: "Merchant Terminal", body: "Cashier screen — generate a dynamic pay node." },
@@ -13,7 +14,7 @@ export default function Home() {
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col justify-center gap-8 px-6 py-16">
       <div>
         <div className="mb-3 flex items-center gap-2 text-brand">
-          <Zap className="h-6 w-6" />
+          <Logo />
           <span className="text-sm font-semibold uppercase tracking-widest">2Pay Technologies</span>
         </div>
         <h1 className="text-4xl font-bold">The 2-second payment orchestration layer</h1>

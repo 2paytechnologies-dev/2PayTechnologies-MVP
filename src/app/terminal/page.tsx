@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Zap } from "lucide-react";
+import { Logo } from "@/components/Logo";
 import type { Merchant } from "@/lib/types";
 import { TerminalPanel } from "@/components/TerminalPanel";
 
@@ -29,7 +29,7 @@ export default function TerminalPage() {
     <main className="mx-auto flex min-h-screen max-w-md flex-col gap-4 p-4">
       <header className="flex items-center justify-between pt-2">
         <div className="flex items-center gap-2 text-brand">
-          <Zap className="h-5 w-5" /> <span className="font-semibold">2Pay Terminal</span>
+          <Logo /> <span className="font-semibold">2Pay Terminal</span>
         </div>
         <select
           value={merchantId}
