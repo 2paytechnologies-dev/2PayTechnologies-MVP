@@ -9,7 +9,15 @@ export const metadata: Metadata = {
   title: "2Pay Technologies — Payment Orchestration",
   description: "2-second non-custodial payment orchestration for Ethiopia",
   applicationName: "2Pay Merchant",
-  icons: { icon: [{ url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" }, { url: "/icons/icon-512.png", sizes: "512x512", type: "image/png" }], apple: "/icons/apple-touch-icon.png" },
+  // ?v= makes browsers fetch the new icons instead of the copy they cached; bump it whenever the icons change.
+  icons: {
+    icon: [
+      { url: "/favicon.ico?v=3", sizes: "any" },
+      { url: "/icons/icon-192.png?v=3", sizes: "192x192", type: "image/png" },
+      { url: "/icons/icon-512.png?v=3", sizes: "512x512", type: "image/png" },
+    ],
+    apple: "/icons/apple-touch-icon.png?v=3",
+  },
 };
 
 export const viewport: Viewport = { width: "device-width", initialScale: 1, themeColor: APP_BG };

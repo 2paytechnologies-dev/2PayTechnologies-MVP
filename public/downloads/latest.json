@@ -1,8 +1,8 @@
 {
-    "version":  "2.1.1",
+    "version":  "2.1.2",
     "minVersion":  "2.0.0",
-    "apk":  "/downloads/2pay-merchant-2.1.1.apk",
-    "notes":  "New icon with a white edge.",
-    "sha256":  "061a8d8442d5ec040071fee6a9296f1d81c2e20ed8d6f0ef8ad7eda64ca37d86",
-    "size":  1774709
+    "apk":  "/downloads/2pay-merchant-2.1.2.apk",
+    "notes":  "App icon with a white edge on all phones.",
+    "sha256":  "6c8fdad3e40fc4efcbca0ce6fa0d88e1b55b83a20293aa803f91bfb3091351f8",
+    "size":  1776246
 }
