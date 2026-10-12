@@ -4,6 +4,7 @@ import { railMode } from "@/lib/rails";
 import { authEnforced, sessionSecret } from "@/lib/auth";
 import { smsConfigured } from "@/lib/sms";
 import { APP_VERSION } from "@/lib/brand";
+import { checkSchema, type SchemaStatus } from "@/lib/schema-check";
 
 export const dynamic = "force-dynamic";
 
@@ -13,19 +14,26 @@ export const dynamic = "force-dynamic";
  */
 export async function GET() {
   let db = false;
+  let schema: SchemaStatus = { ok: false, missing: [] };
   try {
-    const { error } = await getAdminClient().from("merchants").select("id", { head: true, count: "exact" }).limit(1);
+    const admin = getAdminClient();
+    const { error } = await admin.from("merchants").select("id", { head: true, count: "exact" }).limit(1);
     db = !error;
+    if (db) schema = await checkSchema(admin);
   } catch {
     db = false;
   }
+  const ok = db && schema.ok;
   const body = {
-    ok: db,
+    ok,
     version: APP_VERSION,
     time: new Date().toISOString(),
     database: db ? "ok" : "unreachable",
+    // "outdated" lists the migration files in supabase/ still to run (names only).
+    schema: db ? (schema.ok ? "ok" : "outdated") : "unknown",
+    migrationsToRun: schema.missing,
     rail: { mode: railMode(), provider: process.env.RAIL_PROVIDER ?? "arifpay" },
     auth: { enforced: authEnforced(), sessionSecretSet: !!sessionSecret(), smsConfigured: smsConfigured() },
   };
-  return NextResponse.json(body, { status: db ? 200 : 503, headers: { "Cache-Control": "no-store" } });
+  return NextResponse.json(body, { status: ok ? 200 : 503, headers: { "Cache-Control": "no-store" } });
 }
