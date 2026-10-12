@@ -1,8 +1,8 @@
 {
-    "version":  "2.1.0",
+    "version":  "2.1.1",
     "minVersion":  "2.0.0",
-    "apk":  "/downloads/2pay-merchant-2.1.0.apk",
-    "notes":  "Amharic + English, simpler Get paid setup, shop QR, staff roles, receipts, printing.",
-    "sha256":  "fc5684ef4f164d68eeb39a036ce1e3bfbacc0579037848bd8d1dd52a600fd147",
-    "size":  1767850
+    "apk":  "/downloads/2pay-merchant-2.1.1.apk",
+    "notes":  "New icon with a white edge.",
+    "sha256":  "061a8d8442d5ec040071fee6a9296f1d81c2e20ed8d6f0ef8ad7eda64ca37d86",
+    "size":  1774709
 }
