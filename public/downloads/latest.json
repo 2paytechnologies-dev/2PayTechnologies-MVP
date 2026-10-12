@@ -1,8 +1,8 @@
 {
-    "version":  "2.1.4",
+    "version":  "2.1.5",
     "minVersion":  "2.0.0",
-    "apk":  "/downloads/2pay-merchant-2.1.4.apk",
-    "notes":  "Faster payment chime, spoken Paid / ተከፍሏል in the merchant\u0027s language.",
-    "sha256":  "de4c446a39cfde5354415438da1b8ff25597924627efbe0f5cecba8030415dc0",
-    "size":  1772032
+    "apk":  "/downloads/2pay-merchant-2.1.5.apk",
+    "notes":  "Payment chime played by the phone itself, sound test button, spoken Paid / ተከፍሏል.",
+    "sha256":  "f582b9a7521290f5f9ac68ce4150fd8384b9a02fcae19c1dc60193fcbb697016",
+    "size":  1772922
 }

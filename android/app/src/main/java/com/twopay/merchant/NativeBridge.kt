@@ -3,6 +3,9 @@ package com.twopay.merchant
 import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.nfc.NfcAdapter
 import android.os.Build
 import android.os.Environment
@@ -162,6 +165,58 @@ class NativeBridge(private val activity: MainActivity) {
                 warmUpSpeech()
             }
         }
+    }
+
+    /**
+     * The settlement chime, played by the phone itself rather than by the page. The WebView's own audio can be held
+     * back (idle audio is suspended, autoplay rules), which made the chime late or silent. Two soft tones, about half a second.
+     */
+    @Volatile private var chiming = false
+
+    @JavascriptInterface
+    fun chime() {
+        if (chiming) return
+        chiming = true
+        Thread {
+            var track: AudioTrack? = null
+            try {
+                val rate = 44100
+                fun tone(freq: Double, ms: Int): ShortArray {
+                    val n = rate * ms / 1000
+                    return ShortArray(n) { i ->
+                        val t = i.toDouble() / rate
+                        val attack = minOf(1.0, i / (rate * 0.012))      // 12 ms fade-in: no click
+                        val release = minOf(1.0, (n - i) / (rate * 0.12)) // gentle fade-out
+                        (Math.sin(2 * Math.PI * freq * t) * 0.55 * attack * release * Short.MAX_VALUE).toInt().toShort()
+                    }
+                }
+                val data = tone(880.0, 170) + tone(1318.5, 330)
+                track = AudioTrack.Builder()
+                    .setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build(),
+                    )
+                    .setAudioFormat(
+                        AudioFormat.Builder()
+                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                            .setSampleRate(rate)
+                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                            .build(),
+                    )
+                    .setBufferSizeInBytes(data.size * 2)
+                    .setTransferMode(AudioTrack.MODE_STATIC)
+                    .build()
+                track.write(data, 0, data.size)
+                track.play()
+                Thread.sleep(600)
+            } catch (_: Exception) {
+            } finally {
+                try { track?.release() } catch (_: Exception) {}
+                chiming = false
+            }
+        }.start()
     }
 
     @JavascriptInterface

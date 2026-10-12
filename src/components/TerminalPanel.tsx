@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 import Link from "next/link";
-import { Check, CheckCircle2, Copy, Delete, Loader2, Nfc, QrCode, RefreshCw, RotateCcw, Route, ScanLine, TriangleAlert } from "lucide-react";
+import { Check, CheckCircle2, Copy, Delete, Loader2, Nfc, QrCode, RefreshCw, RotateCcw, Route, ScanLine, TriangleAlert, Volume2 } from "lucide-react";
 import { isPaid, type Transaction } from "@/lib/types";
-import { primeAudio, keepAudioAlive, playSettlementChime } from "@/lib/chime";
+import { primeAudio, keepAudioAlive, playSettlementChime, hasVoiceFor } from "@/lib/chime";
 import { clearPayLink, keepScreenAwake, nativeInfo, presentPayLink, type NativeInfo } from "@/lib/native";
 import { eatDateKey, eatDayStartISO, fmt } from "@/lib/format";
 import { useI18n, useT, type Key } from "@/lib/i18n";
@@ -78,6 +78,7 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
   const rotationsRef = useRef(0);
   const seenPaid = useRef<Set<string> | null>(null); // ids of paid sales already announced
   const { lang } = useI18n();
+  const [noVoice, setNoVoice] = useState(false); // after a sound test: this phone has no voice for the merchant's language
   const langRef = useRef(lang); // the announcement is spoken in the language the merchant is using
   useEffect(() => {
     langRef.current = lang;
@@ -481,6 +482,20 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
             {t("terminal.charge")}
           </button>
           <p className="text-center text-xs text-slate-500">{t("terminal.help")}</p>
+          <div className="flex flex-col items-center gap-1">
+            <button
+              type="button"
+              onClick={() => {
+                primeAudio();
+                playSettlementChime(lang);
+                setNoVoice(!hasVoiceFor(lang));
+              }}
+              className="inline-flex items-center gap-1.5 rounded-full border border-slate-700 px-3 py-1.5 text-xs text-slate-300"
+            >
+              <Volume2 className="h-3.5 w-3.5" /> {t("terminal.sound.test")}
+            </button>
+            {noVoice && lang === "am" && <p className="text-center text-xs text-amber-400">{t("terminal.sound.noVoice")}</p>}
+          </div>
 
           <section className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
             <h3 className="mb-2 flex items-center gap-2 text-sm font-semibold text-slate-300">

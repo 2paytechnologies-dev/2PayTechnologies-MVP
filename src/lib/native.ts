@@ -20,6 +20,7 @@ interface Bridge {
   saveFile(name: string, mime: string, base64: string): string;
   speak(text: string, lang: string): void;
   canSpeak?(lang: string): boolean; // added in 2.1.4: false when the phone has no voice for that language
+  chime?(): void; // added in 2.1.5: the settlement chime played by the phone itself
   vibrate(ms: number): void;
   reload(): void;
   print?(): void; // added in 2.1.0; older apps simply do not have it

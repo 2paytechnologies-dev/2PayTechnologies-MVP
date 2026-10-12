@@ -94,11 +94,25 @@ function speakInApp(lang: Lang) {
   }
 }
 
+/** Whether this device can speak the word in that language (otherwise English "Paid" is used instead). */
+export function hasVoiceFor(lang: Lang): boolean {
+  try {
+    const native = getNative();
+    if (native) return typeof native.canSpeak === "function" ? native.canSpeak(WORD[lang].tag) : true;
+    if (lang === "en") return true;
+    return !!window.speechSynthesis?.getVoices().some((v) => v.lang.toLowerCase().startsWith(WORD[lang].tag));
+  } catch {
+    return false;
+  }
+}
+
 /** Chime now, the spoken word right after it (the chime lasts about half a second). */
 export function playSettlementChime(lang: Lang = "en") {
   try {
-    tone();
     const native = getNative();
+    // The app plays the chime itself (newer builds); the page's own audio is the fallback for browsers and older apps.
+    if (native && typeof native.chime === "function") native.chime();
+    else tone();
     if (native) native.vibrate(250);
     setTimeout(() => (native ? speakInApp(lang) : speakInBrowser(lang)), 450);
   } catch {
