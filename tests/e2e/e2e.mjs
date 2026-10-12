@@ -14,7 +14,8 @@ const CRON = "cron-secret-for-tests";
 const now = Math.floor(Date.now() / 1000);
 
 let pass = 0, fail = 0;
-const t = (name, ok, detail = "") => { console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? "  -> " + detail : ""}`); ok ? pass++ : fail++; };
+const failures = [];
+const t = (name, ok, detail = "") => { console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? "  -> " + detail : ""}`); if (ok) pass++; else { fail++; failures.push(`${name}${detail ? "  -> " + detail : ""}`); } };
 const section = (s) => console.log(`\n== ${s}`);
 
 const cookie = async (mid, ph, rl) => `2pay_session=${await signSession({ mid, ph, rl, exp: now + 3600 }, SESSION_SECRET)}`;
@@ -47,7 +48,14 @@ async function liveSale(merchantCookie, amount, { lang = "en", phone = "09112233
     token = r.data?.token;
   }
   if (!token) return { token: null };
-  const init = await call("POST", `/api/pay/${token}/initiate`, { body: { method: "wallet", phone, lang } });
+  // The real Arifpay sandbox is a shared public service and sometimes answers slowly or with a 5xx; try a few times.
+  let init;
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    init = await call("POST", `/api/pay/${token}/initiate`, { body: { method: "wallet", phone, lang } });
+    if (init.status < 500) break;
+    console.log(`  (sandbox answered ${init.status}: ${init.data?.error ?? ""}; retrying ${attempt}/3)`);
+    await wait(2000 * attempt);
+  }
   const row = (await db()).transactions.find((x) => x.token === token);
   return { token, init, nonce: row?.rail_nonce, id: row?.id };
 }
@@ -268,5 +276,6 @@ section("audit log, telemetry, scheduled jobs");
   t("reconciliation runs", rec.status === 200 && "checked" in rec.data);
 }
 
+if (failures.length) console.log("\nFAILED:\n" + failures.map((f) => "  - " + f).join("\n"));
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
