@@ -1,8 +1,8 @@
 {
-    "version":  "2.1.3",
+    "version":  "2.1.4",
     "minVersion":  "2.0.0",
-    "apk":  "/downloads/2pay-merchant-2.1.3.apk",
-    "notes":  "App icon: rounded square with a white edge.",
-    "sha256":  "fac761e260003396685152f05b95b88006004eb745db40b5527fd12d2d20fc47",
-    "size":  1771964
+    "apk":  "/downloads/2pay-merchant-2.1.4.apk",
+    "notes":  "Faster payment chime, spoken Paid / ተከፍሏል in the merchant\u0027s language.",
+    "sha256":  "de4c446a39cfde5354415438da1b8ff25597924627efbe0f5cecba8030415dc0",
+    "size":  1772032
 }

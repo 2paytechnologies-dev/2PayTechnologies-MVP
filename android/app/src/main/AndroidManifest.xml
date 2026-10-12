@@ -9,6 +9,14 @@
     <uses-feature android:name="android.hardware.nfc" android:required="false" />
     <uses-feature android:name="android.hardware.nfc.hce" android:required="false" />
 
+    <!-- Android 11+ hides other apps from us unless declared. Without this the phone's speech engine cannot be found
+         and the spoken "Paid" / "ተከፍሏል" never plays. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"

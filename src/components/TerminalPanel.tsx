@@ -5,10 +5,10 @@ import { QRCodeSVG } from "qrcode.react";
 import Link from "next/link";
 import { Check, CheckCircle2, Copy, Delete, Loader2, Nfc, QrCode, RefreshCw, RotateCcw, Route, ScanLine, TriangleAlert } from "lucide-react";
 import { isPaid, type Transaction } from "@/lib/types";
-import { primeAudio, playSettlementChime } from "@/lib/chime";
+import { primeAudio, keepAudioAlive, playSettlementChime } from "@/lib/chime";
 import { clearPayLink, keepScreenAwake, nativeInfo, presentPayLink, type NativeInfo } from "@/lib/native";
 import { eatDateKey, eatDayStartISO, fmt } from "@/lib/format";
-import { useT, type Key } from "@/lib/i18n";
+import { useI18n, useT, type Key } from "@/lib/i18n";
 
 const PRESETS = [100, 500, 1000];
 const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "0", "⌫"];
@@ -77,6 +77,11 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
   const tokens = useRef<Set<string>>(new Set());
   const rotationsRef = useRef(0);
   const seenPaid = useRef<Set<string> | null>(null); // ids of paid sales already announced
+  const { lang } = useI18n();
+  const langRef = useRef(lang); // the announcement is spoken in the language the merchant is using
+  useEffect(() => {
+    langRef.current = lang;
+  }, [lang]);
 
   useEffect(() => {
     tokens.current = new Set(nodes.map((n) => n.token));
@@ -110,12 +115,13 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
   const finish = useCallback(
     (paid: Transaction) => {
       seenPaid.current?.add(paid.id); // this sale is announced by the full-screen result, not again by the feed
+      // Chime first, right here, in the same moment the result is shown (not inside the state update, which React may run later).
+      if (!toneFired.current) {
+        toneFired.current = true;
+        playSettlementChime(langRef.current);
+      }
       setDone((prev) => {
         if (prev) return prev;
-        if (!toneFired.current) {
-          toneFired.current = true;
-          playSettlementChime();
-        }
         tokens.current.forEach((tok) => tok !== paid.token && cancelNode(tok)); // the sale is settled; retire the other QRs
         return paid;
       });
@@ -123,14 +129,17 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
     [cancelNode],
   );
 
-  // Payment detection over ALL live nodes, by polling the status API every 1.5s (no database credentials in the browser).
+  // Payment detection over ALL live nodes, by polling the status API every 0.6s (no database credentials in the browser).
   const listening = !!tx && !done;
   useEffect(() => {
     if (!listening) return;
     let stopped = false;
+    let inFlight = false; // a slow answer must not pile up more requests behind it
     const poll = setInterval(async () => {
+      keepAudioAlive();
       const list = [...tokens.current];
-      if (!list.length) return;
+      if (!list.length || inFlight) return;
+      inFlight = true;
       try {
         const res = await fetch(`/api/transactions/status?tokens=${list.join(",")}`, { cache: "no-store" });
         if (!res.ok || stopped) return;
@@ -140,8 +149,10 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
         setProcessing(rows.some((r) => r.status === "PROCESSING"));
       } catch {
         /* transient network error: the next poll retries */
+      } finally {
+        inFlight = false;
       }
-    }, 1500);
+    }, 600);
     return () => {
       stopped = true;
       clearInterval(poll);
@@ -165,7 +176,7 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
           const fresh = rows.filter((r) => !seenPaid.current!.has(r.id));
           fresh.forEach((r) => seenPaid.current!.add(r.id));
           if (fresh.length) {
-            playSettlementChime();
+            playSettlementChime(langRef.current);
             setToast(fresh[0]);
             setTimeout(() => setToast(null), 7000);
           }
@@ -176,7 +187,7 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
       }
     };
     void load();
-    const id = setInterval(load, 4000);
+    const id = setInterval(load, 2000);
     return () => {
       stopped = true;
       clearInterval(id);

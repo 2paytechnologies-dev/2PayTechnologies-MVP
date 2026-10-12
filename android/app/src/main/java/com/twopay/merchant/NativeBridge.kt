@@ -34,6 +34,7 @@ class NativeBridge(private val activity: MainActivity) {
     /** JSON: { native, version, nfc: "READY" | "DISABLED" | "UNSUPPORTED", hce } */
     @JavascriptInterface
     fun info(): String {
+        warmUpSpeech() // the terminal asks for info as soon as it opens, so the voice is ready before the first sale
         val hasHce = activity.packageManager.hasSystemFeature("android.hardware.nfc.hce")
         val nfc = adapter()
         val state = when {
@@ -115,23 +116,50 @@ class NativeBridge(private val activity: MainActivity) {
         }
     }
 
-    /** Native speech, because WebView has no speechSynthesis. Used for the Amharic "ተከፍሏል" sale announcement. */
+    private var ttsStarting = false
+    private var pending: Pair<String, String>? = null // the latest thing to say once the engine has started
+
+    /** Start the speech engine ahead of time: its first start takes a second or two, which would delay the first "Paid". */
+    private fun warmUpSpeech() {
+        activity.runOnUiThread {
+            if (tts != null || ttsStarting) return@runOnUiThread
+            ttsStarting = true
+            tts = TextToSpeech(activity.applicationContext) { status ->
+                ttsReady = status == TextToSpeech.SUCCESS
+                ttsStarting = false
+                pending?.let { (text, lang) -> pending = null; if (ttsReady) say(text, lang) }
+            }
+        }
+    }
+
+    private fun say(text: String, lang: String) {
+        val locale = Locale.forLanguageTag(lang.ifEmpty { "en" })
+        val engine = tts ?: return
+        if (engine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
+            engine.language = locale
+            engine.speak(text.take(200), TextToSpeech.QUEUE_FLUSH, null, "twopay-speak")
+        }
+    }
+
+    /**
+     * True when this phone can speak the language (or the engine is still starting, so the answer isn't known yet).
+     * The page uses it to fall back to English "Paid" when the phone has no Amharic voice installed.
+     */
+    @JavascriptInterface
+    fun canSpeak(lang: String): Boolean {
+        warmUpSpeech()
+        val engine = tts
+        if (!ttsReady || engine == null) return true
+        return engine.isLanguageAvailable(Locale.forLanguageTag(lang.ifEmpty { "en" })) >= TextToSpeech.LANG_AVAILABLE
+    }
+
+    /** Native speech, because WebView has no speechSynthesis. Used for the "Paid" / "ተከፍሏል" sale announcement. */
     @JavascriptInterface
     fun speak(text: String, lang: String) {
         activity.runOnUiThread {
-            val say = {
-                val locale = Locale.forLanguageTag(lang.ifEmpty { "en" })
-                val engine = tts
-                if (engine != null && engine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
-                    engine.language = locale
-                    engine.speak(text.take(200), TextToSpeech.QUEUE_FLUSH, null, "twopay-speak")
-                }
-            }
-            if (ttsReady) say() else {
-                tts = TextToSpeech(activity.applicationContext) { status ->
-                    ttsReady = status == TextToSpeech.SUCCESS
-                    if (ttsReady) say()
-                }
+            if (ttsReady) say(text, lang) else {
+                pending = text to lang
+                warmUpSpeech()
             }
         }
     }
