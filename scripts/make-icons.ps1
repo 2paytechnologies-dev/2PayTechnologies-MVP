@@ -54,8 +54,8 @@ function Save-Icon([string]$path, [int]$size, [double]$scale, [string]$shape) {
       # Android adaptive background: the phone shows only the middle two thirds, cropped to its own shape (circle,
       # squircle...). White everywhere, with a navy tile inside, so whatever the shape there is a white edge around it.
       $c.g.FillRectangle($white, 0, 0, $size, $size)
-      $n = $size * 0.60; $o2 = ($size - $n) / 2
-      $c.g.FillPath($brush, (Rounded-Rect $o2 $o2 $n ($n * 0.44)))
+      $n = $size * 0.54; $o2 = ($size - $n) / 2
+      $c.g.FillPath($brush, (Rounded-Rect $o2 $o2 $n ($n * 0.225)))
     }
   }
   if ($shape -eq 'adaptive-bg') { $c.bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png); $c.g.Dispose(); $c.bmp.Dispose(); $brush.Dispose(); $white.Dispose(); return }
@@ -74,7 +74,7 @@ Save-Icon "$Repo\public\icons\apple-touch-icon.png" 180 0.74 'ring-square'   # i
 
 # --- favicon.ico (PNG-compressed entries at 16, 32 and 48)
 $sizes = 16, 32, 48; $pngs = @()
-$ring = 0.08   # thicker at tab-icon sizes so the white edge is still there after scaling
+$ring = 0.045
 foreach ($s in $sizes) { $tmp = Join-Path $env:TEMP "fav$s.png"; Save-Icon $tmp $s 0.84 'rounded'; $pngs += , [IO.File]::ReadAllBytes($tmp) }
 $ring = 0.045
 $ms = New-Object IO.MemoryStream; $bw = New-Object IO.BinaryWriter $ms
@@ -97,7 +97,7 @@ foreach ($d in $legacy.Keys) {
   Save-Icon "$res\mipmap-$d\ic_launcher_round.png"      $legacy[$d] 0.66 'circle'
   # Adaptive icon (Android 8+, what modern phones actually show): white background with a navy tile, logo sized to sit inside the tile.
   Save-Icon "$res\mipmap-$d\ic_launcher_background.png" $fg[$d]     1.0  'adaptive-bg'
-  Save-Icon "$res\mipmap-$d\ic_launcher_foreground.png" $fg[$d]     0.49 'none'
+  Save-Icon "$res\mipmap-$d\ic_launcher_foreground.png" $fg[$d]     0.443 'none'
 }
 $logo.Dispose()
 Write-Output "Icons written on $Brand."
