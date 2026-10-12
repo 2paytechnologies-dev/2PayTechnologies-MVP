@@ -2,8 +2,12 @@ import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { AdminConfigError, getAdminClient } from "@/lib/supabase-admin";
 import { authorizeSimulated } from "@/lib/payments";
-import { activeAdapter, publicBaseUrl, railMode, RailError } from "@/lib/rails";
+import { getAdapter, publicBaseUrl, railMode, RailError, registeredIds } from "@/lib/rails";
+import { candidatesFor, loadHealth, parseRouting, rankProviders, recordAttempt } from "@/lib/rails/router";
 import { normalizePhone } from "@/lib/auth";
+import { clientIp } from "@/lib/audit";
+import { rateLimit } from "@/lib/ratelimit";
+import { saveReceiptContact } from "@/lib/receipts";
 import type { SavedAccount } from "@/lib/settlement";
 
 export const dynamic = "force-dynamic";
@@ -32,10 +36,27 @@ interface Tx {
 const fail = (error: string, status: number) => NextResponse.json({ error }, { status });
 
 /**
+ * Optional per-institution deep link into the bank or wallet app, from RAIL_APP_LINKS:
+ *   {"Telebirr":"<provider-documented link>?pay={url}"}   ({url} is replaced by the encoded checkout URL)
+ * No values are built in: each app's real link format must come from that provider. The pay page tries the app link and
+ * falls back to the web checkout if the app did not open.
+ */
+function appLinkFor(institution: string, checkoutUrl: string): string | undefined {
+  try {
+    const template = (JSON.parse(process.env.RAIL_APP_LINKS ?? "{}") as Record<string, unknown>)[institution];
+    return typeof template === "string" && /^[a-z][a-z0-9+.-]*:/i.test(template) && !/^javascript:/i.test(template)
+      ? template.replace("{url}", encodeURIComponent(checkoutUrl))
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * The payer tapped "Pay via <bank or wallet>".
- *  simulated mode: authorize instantly (no money moves).
- *  live mode:      start a payment with the rail and return where to send the payer. The sale is marked paid only
- *                  by the rail's verified callback, never by this request.
+ *  simulated mode: authorize at once (no money moves).
+ *  live mode:      start a payment with the best available rail and return where to send the payer. The sale is marked
+ *                  paid only by the rail's verified callback, never by this request.
  */
 export async function POST(req: Request, { params }: { params: Promise<{ token: string }> }) {
   const { token } = await params;
@@ -43,6 +64,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
   const body = await req.json().catch(() => ({}));
   const method = body?.method === "bank" || body?.method === "wallet" ? (body.method as "bank" | "wallet") : null;
   if (!method) return fail("method must be 'bank' or 'wallet'", 400);
+  const lang = body?.lang === "am" ? "am" : "en";
 
   let admin;
   try {
@@ -52,10 +74,21 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
     throw e;
   }
 
+  // Abuse guard: each call can create a provider session, so limit per payer and per sale.
+  if (!(await rateLimit(admin, `initiate:ip:${clientIp(req)}`, 30, 60)) || !(await rateLimit(admin, `initiate:tx:${token}`, 12, 60))) {
+    return fail("Too many attempts. Please wait a moment and try again.", 429);
+  }
+
+  const mode = railMode();
+  const rawPhone = typeof body?.phone === "string" ? body.phone.trim() : "";
+  const payerPhone = rawPhone ? normalizePhone(rawPhone) : null;
+  if (rawPhone && !payerPhone) return fail("That mobile number doesn't look right. Use the format 0911223344.", 400);
+  if (mode === "live" && !payerPhone) return fail("Enter the mobile number of the account you are paying from, e.g. 0911223344", 400);
+
   const receiptUrl = `/pay/${token}/receipt`;
 
-  if (railMode() === "simulated") {
-    const r = await authorizeSimulated(admin, token, method);
+  if (mode === "simulated") {
+    const r = await authorizeSimulated(admin, token, method, payerPhone ? { phone: payerPhone, lang } : undefined);
     return r.ok ? NextResponse.json({ mode: "simulated", next: receiptUrl, latency_ms: r.tx.latency_ms, rail: r.tx.rail }) : fail(r.error, r.status);
   }
 
@@ -86,9 +119,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
   const routed = method === "bank" ? tx.routed_bank : tx.routed_wallet;
   if (!routed) return fail("The merchant does not accept that payment method", 400);
 
-  const payerPhone = normalizePhone(body?.phone);
-  if (!payerPhone) return fail("Enter the mobile number of the account you are paying from, e.g. 0911223344", 400);
-
   const merchant = Array.isArray(tx.merchants) ? tx.merchants[0] : tx.merchants;
   const beneficiary =
     method === "bank"
@@ -99,42 +129,62 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
       : undefined;
   if (method === "bank" && !beneficiary) return fail("The merchant changed their account. Ask the cashier for a new code.", 409);
 
-  let adapter;
-  let baseUrl;
+  let baseUrl: string;
   try {
-    adapter = activeAdapter();
     baseUrl = publicBaseUrl();
   } catch (e) {
     console.error("[initiate] configuration:", (e as Error).message);
     return fail("Payments are not configured yet", 503);
   }
 
+  // Smart routing: the operator's preferred providers for this institution, healthy ones first.
+  const registered = registeredIds();
+  const candidates = candidatesFor(routed.institution, parseRouting(process.env.RAIL_ROUTING), registered, process.env.RAIL_PROVIDER ?? "arifpay");
+  if (!candidates.length) {
+    console.error("[initiate] no registered provider for", routed.institution);
+    return fail("Payments are not configured yet", 503);
+  }
+  const ranked = rankProviders(candidates, await loadHealth(admin, candidates));
+
   const nonce = randomUUID().replace(/-/g, "");
-  let session;
-  try {
-    session = await adapter.createPayment({
-      token,
-      transactionId: tx.id,
-      amount: Number(tx.amount),
-      currency: tx.currency,
-      method,
-      institution: routed.institution,
-      merchantName: merchant?.business_name ?? "2Pay merchant",
-      beneficiary: beneficiary ?? undefined,
-      nonce,
-      expiresAt: new Date(Date.now() + SESSION_TTL_MS),
-      payerPhone,
-      urls: {
-        success: `${baseUrl}${receiptUrl}`,
-        cancel: `${baseUrl}/pay/${token}?cancelled=1`,
-        error: `${baseUrl}/pay/${token}?error=1`,
-        notify: adapter.notifyUrl(baseUrl),
-      },
-    });
-  } catch (e) {
-    const re = e instanceof RailError ? e : null;
-    console.error("[initiate] provider error:", (e as Error).message);
-    return fail(re?.retryable ? "The payment provider is unreachable right now. Please try again in a moment." : "The payment provider could not start this payment.", 502);
+  let session: { sessionId: string; checkoutUrl: string } | null = null;
+  let providerId = "";
+  let lastError: RailError | Error | null = null;
+  for (const id of ranked) {
+    const adapter = getAdapter(id)!;
+    try {
+      session = await adapter.createPayment({
+        token,
+        transactionId: tx.id,
+        amount: Number(tx.amount),
+        currency: tx.currency,
+        method,
+        institution: routed.institution,
+        merchantName: merchant?.business_name ?? "2Pay merchant",
+        beneficiary: beneficiary ?? undefined,
+        nonce,
+        expiresAt: new Date(Date.now() + SESSION_TTL_MS),
+        payerPhone: payerPhone!,
+        urls: {
+          success: `${baseUrl}${receiptUrl}`,
+          cancel: `${baseUrl}/pay/${token}?cancelled=1`,
+          error: `${baseUrl}/pay/${token}?error=1`,
+          notify: adapter.notifyUrl(baseUrl),
+        },
+      });
+      providerId = id;
+      await recordAttempt(admin, id, routed.institution, true);
+      break;
+    } catch (e) {
+      lastError = e as Error;
+      console.error(`[initiate] ${id} failed:`, (e as Error).message);
+      await recordAttempt(admin, id, routed.institution, false, (e as Error).message);
+      // try the next provider in line
+    }
+  }
+  if (!session) {
+    const retryable = lastError instanceof RailError && lastError.retryable;
+    return fail(retryable ? "The payment provider is unreachable right now. Please try again in a moment." : "The payment provider could not start this payment.", 502);
   }
 
   // First writer wins: only a still-PENDING sale can be claimed, so two quick taps never leave an orphaned session.
@@ -144,7 +194,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
       status: "PROCESSING",
       rail: routed.institution,
       settlement_method: method.toUpperCase(),
-      rail_provider: adapter.id,
+      rail_provider: providerId,
       rail_session_id: session.sessionId,
       rail_nonce: nonce,
       rail_checkout_url: session.checkoutUrl,
@@ -164,5 +214,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
     return fail("This payment can no longer be started", 409);
   }
 
-  return NextResponse.json({ mode: "redirect", url: session.checkoutUrl });
+  if (payerPhone) await saveReceiptContact(admin, tx.id, payerPhone, lang);
+  return NextResponse.json({ mode: "redirect", url: session.checkoutUrl, appLink: appLinkFor(routed.institution, session.checkoutUrl) });
 }

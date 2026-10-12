@@ -3,6 +3,9 @@ import { randomUUID } from "node:crypto";
 import { AdminConfigError, getAdminClient } from "@/lib/supabase-admin";
 import { OTP_MAX_REQUESTS, OTP_REQUEST_WINDOW_S, OTP_TTL_S, hashCode, newCode, normalizePhone, sessionSecret, testMode } from "@/lib/auth";
 import { sendOtpSms, smsConfigured } from "@/lib/sms";
+import { findAccountByPhone } from "@/lib/accounts";
+import { clientIp } from "@/lib/audit";
+import { rateLimit } from "@/lib/ratelimit";
 
 export const dynamic = "force-dynamic";
 
@@ -25,10 +28,17 @@ export async function POST(req: Request) {
   try {
     const admin = getAdminClient();
 
-    const { data: existing, error: lookupErr } = await admin.from("merchants").select("id").eq("phone", phone).maybeSingle();
-    if (lookupErr) {
-      console.error("[otp/request] merchant lookup:", lookupErr.message);
-      return NextResponse.json({ error: "Could not start verification. Has supabase/merchant_registration.sql been run?" }, { status: 500 });
+    // Abuse guard: each code costs an SMS, so limit per IP as well as per phone (fails closed).
+    if (!(await rateLimit(admin, `otp:ip:${clientIp(req)}`, 12, 600, { failClosed: true }))) {
+      return NextResponse.json({ error: "Too many attempts. Try again in a few minutes." }, { status: 429 });
+    }
+
+    let existing;
+    try {
+      existing = await findAccountByPhone(admin, phone); // an owner OR a cashier added by an owner
+    } catch (e) {
+      console.error("[otp/request] account lookup:", (e as Error).message);
+      return NextResponse.json({ error: "Could not start verification. Has the latest SQL in supabase/ been run?" }, { status: 500 });
     }
     if (purpose === "register" && existing) return NextResponse.json({ error: "This number is already registered. Sign in instead." }, { status: 409 });
     if (purpose === "login" && !existing) return NextResponse.json({ error: "No account for this number. Register first." }, { status: 404 });

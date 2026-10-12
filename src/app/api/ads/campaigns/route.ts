@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { AdminConfigError, getAdminClient } from "@/lib/supabase-admin";
 import { requireMerchant } from "@/lib/guard";
+import { audit } from "@/lib/audit";
 import { AD_IMPRESSION_COST, type TargetCategory } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -16,7 +17,7 @@ const configError = () => NextResponse.json({ error: "Server misconfigured" }, {
 export async function GET(req: Request) {
   const merchantId = new URL(req.url).searchParams.get("merchant_id") ?? "";
   if (!UUID.test(merchantId)) return NextResponse.json({ error: "merchant_id (uuid) is required" }, { status: 400 });
-  const guard = await requireMerchant(merchantId);
+  const guard = await requireMerchant(merchantId, { owner: true });
   if (!guard.ok) return guard.res;
   try {
     const { data, error } = await getAdminClient()
@@ -79,7 +80,7 @@ export async function POST(req: Request) {
   if (!Number.isFinite(budget) || budget < MIN_BUDGET || budget > MAX_BUDGET)
     errors.push(`Budget must be between ${MIN_BUDGET} and ${MAX_BUDGET} ETB`);
   if (errors.length) return NextResponse.json({ error: errors.join(". ") }, { status: 400 });
-  const guard = await requireMerchant(merchantId);
+  const guard = await requireMerchant(merchantId, { owner: true });
   if (!guard.ok) return guard.res;
 
   try {
@@ -107,6 +108,7 @@ export async function POST(req: Request) {
       console.error("[ads/campaigns POST]", error.message);
       return NextResponse.json({ error: "Could not create campaign" }, { status: 500 });
     }
+    await audit(admin, guard.session, req, { action: "campaign.create", targetType: "campaign", targetId: data.id, merchantId, details: { title, budget, target: category } });
     return NextResponse.json(data, { status: 201 });
   } catch (e) {
     if (e instanceof AdminConfigError) return configError();

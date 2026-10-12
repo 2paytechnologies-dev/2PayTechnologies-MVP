@@ -80,7 +80,9 @@ Steps:
    - `parseWebhook(body)` returns `{ status: "SETTLED" | "FAILED" | "PENDING", nonce, amount, providerRef, paymentMethod }` or `null`.
 2. Register it in `ADAPTERS` in `src/lib/rails/index.ts`.
 3. Point the provider's callback at `https://<your-domain>/api/webhooks/<provider-id>`.
-4. Set `RAIL_PROVIDER=<provider-id>` (one active provider per deployment today; per-institution routing is a natural next step:
-   choose the adapter from `req.institution` in `initiate`).
+4. Set `RAIL_PROVIDER=<provider-id>` as the default, and optionally `RAIL_ROUTING` to choose providers per institution, e.g.
+   `{"default":["arifpay"],"Telebirr":["telebirr","arifpay"]}`. For each payment, `initiate` tries the listed providers in order
+   (`src/lib/rails/router.ts`); one that is failing (by recent session errors and payment outcomes) is tried last, not dropped, and
+   every attempt is recorded in `rail_attempts`. `RAIL_APP_LINKS` can add an "open my bank app" button per institution.
 
 Nothing else changes: the terminal, tap-to-pay, checkout, receipt, ads, reconciliation and dashboards are provider-agnostic.

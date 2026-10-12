@@ -51,6 +51,8 @@ export interface Transaction {
   routed_bank: RoutedAccount | null;
   routed_wallet: RoutedAccount | null;
   settlement_method: SettlementMethod | null;
+  /** Where the sale started: the cashier keypad, or a customer scanning the printed shop QR. */
+  source?: "TERMINAL" | "STATIC_QR";
 }
 
 /** Shape returned by the open_transaction() RPC. */

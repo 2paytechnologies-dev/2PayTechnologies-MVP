@@ -9,6 +9,7 @@ import { isPaid } from "@/lib/types";
 import { useOverview } from "@/lib/use-overview";
 import { WatchdogFeed } from "@/components/admin/WatchdogFeed";
 import { FeeInspector } from "@/components/admin/FeeInspector";
+import { AdminOps } from "@/components/admin/AdminOps";
 
 export default function AdminHubPage() {
   const { transactions: txs, events, merchants, error: txError, eventsError: eventError } = useOverview(5000);
@@ -56,6 +57,7 @@ export default function AdminHubPage() {
 
       <WatchdogFeed events={events} merchants={merchantMap} error={eventError} />
       <FeeInspector txs={txs} events={events} merchants={merchants} />
+      <AdminOps />
     </main>
   );
 }

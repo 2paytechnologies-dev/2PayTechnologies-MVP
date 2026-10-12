@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: placeholder
+
+  # Real route handlers against an in-memory database. It also makes one call to Arifpay's public sandbox, so an outage
+  # there can fail this job; it is reported separately so it does not hide the unit tests above.
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Start the stand-in database and the app
+        run: |
+          node tests/e2e/mock-postgrest.mjs &
+          npx next dev -p 3170 &
+          for i in $(seq 1 60); do curl -fs http://localhost:3170/api/health >/dev/null && break; sleep 2; done
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: http://localhost:4020
+          SUPABASE_SERVICE_ROLE_KEY: service
+          AUTH_ENFORCED: "true"
+          SESSION_SECRET: qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq
+          ADMIN_PHONES: "0711000111"
+          RAIL_MODE: live
+          PUBLIC_BASE_URL: http://localhost:3170
+          ARIFPAY_WEBHOOK_SECRET: unit-test-webhook-secret-0123456789
+          SMS_WEBHOOK_URL: http://localhost:4030
+          CRON_SECRET: cron-secret-for-tests
+          KYC_REQUIRED_FOR_LIVE: "true"
+      - run: node --experimental-transform-types --no-warnings tests/e2e/e2e.mjs
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: android-actions/setup-android@v3
+      - name: Tap protocol unit tests
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew testDebugUnitTest --no-daemon

@@ -2,11 +2,14 @@ package com.twopay.merchant
 
 import android.annotation.SuppressLint
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.nfc.NfcAdapter
 import android.nfc.cardemulation.CardEmulation
 import android.os.Bundle
+import android.print.PrintAttributes
+import android.print.PrintManager
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebResourceError
@@ -86,6 +89,16 @@ class MainActivity : ComponentActivity() {
 
     fun loadStart() {
         web.loadUrl(startUrl)
+    }
+
+    /** WebView has no window.print(); hand the page to the system print service instead. */
+    fun printPage() {
+        try {
+            val manager = getSystemService(Context.PRINT_SERVICE) as PrintManager
+            val name = "2Pay-${System.currentTimeMillis()}"
+            manager.print(name, web.createPrintDocumentAdapter(name), PrintAttributes.Builder().build())
+        } catch (_: Exception) {
+        }
     }
 
     override fun onStart() {

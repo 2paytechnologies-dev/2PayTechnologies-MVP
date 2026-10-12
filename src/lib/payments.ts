@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { checkAml, checkVelocity } from "@/lib/watchdog";
+import { saveReceiptContact, sendReceiptSms } from "@/lib/receipts";
 import type { RailMethod } from "@/lib/rails";
 
 export type SimulatedResult =
@@ -11,7 +12,7 @@ export type SimulatedResult =
  * The institution comes from the transaction's own routing snapshot inside authorize_transaction_v2().
  * Never reachable in live mode: the callers refuse first, and the database function is service-role only after lockdown.
  */
-export async function authorizeSimulated(admin: SupabaseClient, token: string, method: RailMethod): Promise<SimulatedResult> {
+export async function authorizeSimulated(admin: SupabaseClient, token: string, method: RailMethod, contact?: { phone: string; lang: string }): Promise<SimulatedResult> {
   const { data, error } = await admin.rpc("authorize_transaction_v2", { p_token: token, p_method: method });
   if (error) {
     if (error.message.includes("TOKEN_INVALID_OR_EXPIRED")) return { ok: false, status: 410, error: "Token invalid, used or expired" };
@@ -26,5 +27,7 @@ export async function authorizeSimulated(admin: SupabaseClient, token: string, m
   } catch (e) {
     console.error("[authorizeSimulated] watchdog skipped:", (e as Error).message);
   }
+  if (contact) await saveReceiptContact(admin, data.id, contact.phone, contact.lang);
+  await sendReceiptSms(admin, data.id);
   return { ok: true, tx: data };
 }

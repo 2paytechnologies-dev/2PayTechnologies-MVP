@@ -5,3 +5,30 @@
 body {
   @apply bg-slate-950 text-slate-100 antialiased;
 }
+
+
+/* Ethiopic (Amharic) glyphs: phones ship Noto Sans Ethiopic; Windows ships Nyala/Ebrima. */
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans Ethiopic", "Ebrima", "Nyala", "Abyssinica SIL", sans-serif;
+}
+
+/* Printing (shop poster, end-of-day report): show ONLY the element marked #print-area, on white. */
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+  #print-area,
+  #print-area * {
+    visibility: visible !important;
+  }
+  #print-area {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    background: #fff !important;
+    color: #000 !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { AdminConfigError, getAdminClient } from "@/lib/supabase-admin";
 import { requireMerchant } from "@/lib/guard";
+import { audit } from "@/lib/audit";
 import { buildAccounts, isUuid, pickActive, toMasked, type SavedAccount, type SettlementView } from "@/lib/settlement";
 
 export const dynamic = "force-dynamic";
@@ -29,7 +30,7 @@ function view(row: Row): SettlementView {
 export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   if (!isUuid(id)) return NextResponse.json({ error: "Malformed merchant id" }, { status: 400 });
-  const guard = await requireMerchant(id);
+  const guard = await requireMerchant(id, { owner: true });
   if (!guard.ok) return guard.res;
   try {
     const { data, error } = await getAdminClient().from("merchants").select(COLUMNS).eq("id", id).maybeSingle();
@@ -53,7 +54,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   if (!isUuid(id)) return NextResponse.json({ error: "Malformed merchant id" }, { status: 400 });
-  const guard = await requireMerchant(id);
+  const guard = await requireMerchant(id, { owner: true });
   if (!guard.ok) return guard.res;
   const body = await req.json().catch(() => null);
   if (!body) return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
@@ -93,6 +94,13 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       console.error("[settlement PUT]", error.message);
       return NextResponse.json({ error: "Could not save settlement settings" }, { status: 500 });
     }
+    await audit(admin, guard.session, req, {
+      action: "settlement.update",
+      targetType: "merchant",
+      targetId: id,
+      merchantId: id,
+      details: { banks: banks.accounts.length, wallets: wallets.accounts.length, active_bank: activeBank.active?.institution ?? null, active_wallet: activeWallet.active?.institution ?? null },
+    });
     return NextResponse.json(view(saved as Row));
   } catch (e) {
     if (e instanceof AdminConfigError) return configError();

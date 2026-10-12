@@ -144,6 +144,12 @@ class NativeBridge(private val activity: MainActivity) {
         else @Suppress("DEPRECATION") v.vibrate(d)
     }
 
+    /** Opens Android's print dialog for the current page (end-of-day report, shop poster). Can save as PDF too. */
+    @JavascriptInterface
+    fun print() {
+        activity.runOnUiThread { activity.printPage() }
+    }
+
     @JavascriptInterface
     fun reload() {
         activity.runOnUiThread { activity.loadStart() }

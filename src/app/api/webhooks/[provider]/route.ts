@@ -3,6 +3,7 @@ import { AdminConfigError, getAdminClient } from "@/lib/supabase-admin";
 import { getAdapter } from "@/lib/rails";
 import { recordWatchdogEvent } from "@/lib/watchdog";
 import { BANKS, WALLETS } from "@/lib/constants";
+import { sendReceiptSms } from "@/lib/receipts";
 
 export const dynamic = "force-dynamic";
 
@@ -167,5 +168,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ provide
     });
   }
   await note(true, detail, settled.id);
+  await sendReceiptSms(admin, settled.id);
   return NextResponse.json({ acknowledged: true });
 }

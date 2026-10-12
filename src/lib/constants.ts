@@ -58,3 +58,29 @@ export type SettlementKind = "bank" | "wallet";
 
 export const isBank = (name: string): name is Bank => (BANKS as readonly string[]).includes(name);
 export const isWallet = (name: string): name is Wallet => (WALLETS as readonly string[]).includes(name);
+
+/** Shown first in the pickers so most merchants find theirs without searching. */
+export const POPULAR_BANKS: Bank[] = [
+  "Commercial Bank of Ethiopia (CBE)",
+  "Awash Bank",
+  "Dashen Bank",
+  "Bank of Abyssinia",
+  "Wegagen Bank",
+  "Nib International Bank",
+];
+export const POPULAR_WALLETS: Wallet[] = ["Telebirr", "CBE Birr", "M-Pesa"];
+
+/** Short badge text for an institution: the abbreviation in brackets if it has one, else its first two letters. */
+export function shortName(name: string): string {
+  const m = /\(([A-Z]{2,5})\)/.exec(name);
+  if (m) return m[1];
+  const word = name.split(/\s+/)[0] ?? name;
+  return word.slice(0, 2).toUpperCase();
+}
+
+/** A stable hue (0-359) per institution, so each keeps the same badge colour everywhere. */
+export function hueFor(name: string): number {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return h % 360;
+}

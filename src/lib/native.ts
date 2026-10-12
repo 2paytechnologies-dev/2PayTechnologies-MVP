@@ -21,6 +21,7 @@ interface Bridge {
   speak(text: string, lang: string): void;
   vibrate(ms: number): void;
   reload(): void;
+  print?(): void; // added in 2.1.0; older apps simply do not have it
 }
 
 declare global {
@@ -63,4 +64,15 @@ export function keepScreenAwake(on: boolean) {
   } catch {
     /* ignore */
   }
+}
+
+/** Print the page (posters, reports). The Android WebView can't open the print dialog by itself, so the app does it. */
+export function printPage() {
+  try {
+    const n = getNative();
+    if (n?.print) return n.print();
+  } catch {
+    /* fall through to the browser */
+  }
+  window.print();
 }

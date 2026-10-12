@@ -4,14 +4,14 @@ export const EAT_TZ = "Africa/Addis_Ababa";
 
 export const fmt = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-/** "10 Oct 2026, 14:32 EAT" */
-export function formatEAT(iso: string): string {
+/** "10 Oct 2026, 14:32 EAT". Gregorian dates and Latin digits in both languages; Amharic gets Amharic month names. */
+export function formatEAT(iso: string, lang: "en" | "am" = "en"): string {
   const d = new Date(iso);
-  const date = d.toLocaleDateString("en-GB", { timeZone: EAT_TZ, day: "2-digit", month: "short", year: "numeric" });
+  const locale = lang === "am" ? "am-ET-u-ca-gregory-nu-latn" : "en-GB";
+  const date = d.toLocaleDateString(locale, { timeZone: EAT_TZ, day: "2-digit", month: "short", year: "numeric" });
   const time = d.toLocaleTimeString("en-GB", { timeZone: EAT_TZ, hour: "2-digit", minute: "2-digit", hour12: false });
   return `${date}, ${time} EAT`;
 }
-
 /** Calendar date (YYYY-MM-DD) of an instant, in Addis Ababa. */
 export function eatDateKey(d: Date): string {
   return d.toLocaleDateString("en-CA", { timeZone: EAT_TZ });

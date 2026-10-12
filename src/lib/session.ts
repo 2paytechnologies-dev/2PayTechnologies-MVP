@@ -9,6 +9,7 @@ export interface SessionPayload {
   /** merchant id */ mid: string;
   /** verified phone, +251… */ ph: string;
   /** expiry, unix seconds */ exp: number;
+  /** OWNER (the merchant's own phone) or CASHIER (staff). Sessions issued before V2.1 have none and are treated as OWNER. */ rl?: "OWNER" | "CASHIER";
 }
 
 const enc = new TextEncoder();

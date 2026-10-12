@@ -16,6 +16,7 @@ export type RailMode = "simulated" | "live";
 export const railMode = (): RailMode => (process.env.RAIL_MODE === "live" ? "live" : "simulated");
 
 export const getAdapter = (id: string): RailAdapter | null => ADAPTERS[id] ?? null;
+export const registeredIds = (): string[] => Object.keys(ADAPTERS);
 
 /** The provider new payments are routed to. */
 export function activeAdapter(): RailAdapter {

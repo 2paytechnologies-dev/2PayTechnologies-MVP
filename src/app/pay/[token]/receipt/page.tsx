@@ -3,17 +3,19 @@
 import { use, useEffect, useRef, useState } from "react";
 import { Download, Loader2, XCircle } from "lucide-react";
 import { Logo } from "@/components/Logo";
+import { LanguageMenu } from "@/components/LanguageMenu";
 import { fmt, formatEAT } from "@/lib/format";
+import { useI18n, type Key } from "@/lib/i18n";
 import type { ReceiptView, ServedAd } from "@/lib/types";
 
-type State = { kind: "loading" } | { kind: "confirming" } | { kind: "ready"; receipt: ReceiptView } | { kind: "error"; message: string };
+type State = { kind: "loading" } | { kind: "confirming" } | { kind: "ready"; receipt: ReceiptView } | { kind: "error"; key: Key };
 
 function mapsHref(loc: string): string {
   return /^https?:\/\//i.test(loc) ? loc : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(loc)}`;
 }
 
 /** Renders the receipt to a PNG on a canvas and downloads it. No server round trip, works offline. */
-function saveReceiptImage(r: ReceiptView) {
+function saveReceiptImage(r: ReceiptView, t: (k: Key) => string, lang: "en" | "am") {
   const W = 720;
   const H = 880;
   const canvas = document.createElement("canvas");
@@ -21,7 +23,7 @@ function saveReceiptImage(r: ReceiptView) {
   canvas.height = H;
   const g = canvas.getContext("2d");
   if (!g) return;
-  const font = "system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif";
+  const font = "system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans Ethiopic', Ebrima, Nyala, sans-serif";
 
   g.fillStyle = "#ffffff";
   g.fillRect(0, 0, W, H);
@@ -32,27 +34,27 @@ function saveReceiptImage(r: ReceiptView) {
   g.fillText("2Pay", W / 2, 90);
   g.fillStyle = "#0f172a";
   g.font = `600 30px ${font}`;
-  g.fillText("Payment Receipt", W / 2, 140);
+  g.fillText(t("receipt.title"), W / 2, 140);
 
   g.fillStyle = "#d1fae5";
   g.beginPath();
-  g.roundRect(W / 2 - 170, 175, 340, 56, 28);
+  g.roundRect(W / 2 - 200, 175, 400, 56, 28);
   g.fill();
   g.fillStyle = "#047857";
   g.font = `600 26px ${font}`;
-  g.fillText("✓ Payment Successful", W / 2, 212);
+  g.fillText(t("receipt.success"), W / 2, 212);
 
   g.fillStyle = "#0f172a";
   g.font = `800 68px ${font}`;
-  g.fillText(`${fmt(r.amount)} ${r.currency}`, W / 2, 330);
+  g.fillText(`${fmt(r.amount)} ${r.currency === "ETB" ? t("common.etb") : r.currency}`, W / 2, 330);
 
   g.fillStyle = "#475569";
   g.font = `400 26px ${font}`;
-  g.fillText(`Paid to: ${r.merchant_name}`, W / 2, 410);
+  g.fillText(`${t("receipt.paidTo")} ${r.merchant_name}`, W / 2, 410);
   g.fillText(`${r.terminal_id}${r.location ? ` • ${r.location}` : ""}`, W / 2, 450);
-  g.fillText(`Ref: ${r.reference}`, W / 2, 510);
-  g.fillText(formatEAT(r.paid_at), W / 2, 550);
-  g.fillText(`Rail: ${r.rail}`, W / 2, 590);
+  g.fillText(`${t("receipt.ref")} ${r.reference}`, W / 2, 510);
+  g.fillText(formatEAT(r.paid_at, lang), W / 2, 550);
+  g.fillText(`${t("receipt.rail")}: ${r.rail}`, W / 2, 590);
 
   g.strokeStyle = "#cbd5e1";
   g.setLineDash([10, 8]);
@@ -64,7 +66,7 @@ function saveReceiptImage(r: ReceiptView) {
 
   g.fillStyle = "#94a3b8";
   g.font = `400 22px ${font}`;
-  g.fillText("2Pay never holds your funds. Settled on licensed rails.", W / 2, 710);
+  g.fillText(t("receipt.noteNever"), W / 2, 710);
 
   canvas.toBlob((blob) => {
     if (!blob) return;
@@ -81,6 +83,7 @@ function saveReceiptImage(r: ReceiptView) {
 
 export default function ReceiptPage({ params }: { params: Promise<{ token: string }> }) {
   const { token } = use(params);
+  const { t, lang } = useI18n();
   const [state, setState] = useState<State>({ kind: "loading" });
   const [closed, setClosed] = useState(false);
   const billed = useRef(false);
@@ -103,19 +106,9 @@ export default function ReceiptPage({ params }: { params: Promise<{ token: strin
           timer = setTimeout(load, 2000);
           return;
         }
-        setState({
-          kind: "error",
-          message:
-            r.status === 409
-              ? d.status === "PROCESSING"
-                ? "We haven't received confirmation yet. If money left your account, it will be confirmed shortly. Keep this page or check with the merchant."
-                : "This payment has not been completed."
-              : r.status === 404
-                ? "Receipt not found."
-                : "Could not load your receipt.",
-        });
+        setState({ kind: "error", key: r.status === 409 ? (d.status === "PROCESSING" ? "receipt.err.late" : "receipt.err.notDone") : r.status === 404 ? "receipt.err.notFound" : "receipt.err.load" });
       } catch {
-        if (!cancelled) setState({ kind: "error", message: "Cannot reach 2Pay." });
+        if (!cancelled) setState({ kind: "error", key: "common.offline" });
       }
     };
     void load();
@@ -155,33 +148,37 @@ export default function ReceiptPage({ params }: { params: Promise<{ token: strin
 
   return (
     <div className="fixed inset-0 overflow-y-auto bg-white text-slate-900">
-      <main className="mx-auto flex min-h-full max-w-md flex-col px-5 pb-8 pt-6">
+      <main className="mx-auto flex min-h-full max-w-md flex-col px-5 pb-8 pt-4">
+        <div className="flex justify-end">
+          <LanguageMenu variant="light" />
+        </div>
+
         {state.kind === "loading" && (
           <div className="flex flex-1 items-center justify-center gap-2 text-slate-500">
-            <Loader2 className="h-5 w-5 animate-spin" /> Loading receipt…
+            <Loader2 className="h-5 w-5 animate-spin" /> {t("receipt.loading")}
           </div>
         )}
 
         {state.kind === "confirming" && (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center text-slate-600">
             <Loader2 className="h-10 w-10 animate-spin text-emerald-600" />
-            <h1 className="text-lg font-semibold text-slate-800">Confirming your payment…</h1>
-            <p className="max-w-xs text-sm">Your bank or wallet is confirming the payment. This usually takes a few seconds. Please keep this page open.</p>
+            <h1 className="text-lg font-semibold text-slate-800">{t("receipt.confirming")}</h1>
+            <p className="max-w-xs text-sm">{t("receipt.confirmingBody")}</p>
           </div>
         )}
 
         {state.kind === "error" && (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
             <XCircle className="h-14 w-14 text-rose-500" />
-            <p className="text-slate-600">{state.message}</p>
+            <p className="text-slate-600">{t(state.key)}</p>
           </div>
         )}
 
         {receipt && closed && (
           <div className="flex flex-1 flex-col items-center justify-center gap-2 text-center">
             <div className="text-5xl">✓</div>
-            <h1 className="text-xl font-bold">Thank you</h1>
-            <p className="text-slate-500">Your receipt is saved with 2Pay. You can close this page.</p>
+            <h1 className="text-xl font-bold">{t("receipt.thanks")}</h1>
+            <p className="text-slate-500">{t("receipt.thanksBody")}</p>
           </div>
         )}
 
@@ -192,24 +189,24 @@ export default function ReceiptPage({ params }: { params: Promise<{ token: strin
                 <Logo />
                 <span className="text-2xl font-extrabold tracking-tight">2Pay</span>
               </div>
-              <h1 className="text-lg font-semibold text-slate-700">Payment Receipt</h1>
+              <h1 className="text-lg font-semibold text-slate-700">{t("receipt.title")}</h1>
             </header>
 
             <div className="mt-5 flex justify-center">
-              <span className="rounded-full bg-emerald-100 px-4 py-1.5 text-sm font-semibold text-emerald-700">✓ Payment Successful</span>
+              <span className="rounded-full bg-emerald-100 px-4 py-1.5 text-sm font-semibold text-emerald-700">{t("receipt.success")}</span>
             </div>
 
             <p className="mt-5 text-center text-5xl font-extrabold tabular-nums tracking-tight">
-              {fmt(receipt.amount)} <span className="text-3xl font-bold text-slate-500">{receipt.currency}</span>
+              {fmt(receipt.amount)} <span className="text-3xl font-bold text-slate-500">{receipt.currency === "ETB" ? t("common.etb") : receipt.currency}</span>
             </p>
 
             <div className="mt-5 space-y-1 text-center text-sm text-slate-600">
               <p>
-                Paid to: <span className="font-semibold text-slate-800">{receipt.merchant_name}</span> • {receipt.terminal_id}
+                {t("receipt.paidTo")} <span className="font-semibold text-slate-800">{receipt.merchant_name}</span> • {receipt.terminal_id}
                 {receipt.location ? ` • ${receipt.location}` : ""}
               </p>
               <p>
-                Ref: <span className="font-mono font-semibold text-slate-800">{receipt.reference}</span> • {formatEAT(receipt.paid_at)}
+                {t("receipt.ref")} <span className="font-mono font-semibold text-slate-800">{receipt.reference}</span> • {formatEAT(receipt.paid_at, lang)}
               </p>
             </div>
 
@@ -220,12 +217,12 @@ export default function ReceiptPage({ params }: { params: Promise<{ token: strin
               {!receipt.ad && (
                 // Nothing is being served for this merchant right now: keep the slot visible and recruit advertisers.
                 <section className="rounded-2xl border-2 border-dashed border-amber-300 bg-amber-50 p-4" aria-label="Advertising space">
-                  <span className="inline-block rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-700">📢 Advertising space</span>
+                  <span className="inline-block rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-700">{t("receipt.adSpace")}</span>
                   <div className="mt-3 flex items-start gap-3">
                     <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl border border-amber-200 bg-white text-3xl">📣</div>
                     <div className="min-w-0">
-                      <h2 className="font-bold leading-snug text-slate-900">Advertise your business here</h2>
-                      <p className="mt-0.5 text-sm text-slate-600">Reach nearby customers the moment they pay. Create an offer in minutes from your 2Pay dashboard.</p>
+                      <h2 className="font-bold leading-snug text-slate-900">{t("receipt.adHere")}</h2>
+                      <p className="mt-0.5 text-sm text-slate-600">{t("receipt.adPitch")}</p>
                     </div>
                   </div>
                   <a
@@ -234,23 +231,18 @@ export default function ReceiptPage({ params }: { params: Promise<{ token: strin
                     rel="noopener noreferrer"
                     className="mt-4 flex items-center justify-center rounded-xl border border-amber-300 bg-white py-2.5 text-sm font-semibold text-amber-800 active:bg-amber-100"
                   >
-                    Advertise with 2Pay
+                    {t("receipt.adCta")}
                   </a>
                 </section>
               )}
 
               {receipt.ad && (
                 <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
-                  <span className="inline-block rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-700">📢 Sponsored Nearby Offer</span>
+                  <span className="inline-block rounded-full bg-amber-100 px-3 py-1 text-xs font-medium text-amber-700">{t("receipt.sponsored")}</span>
                   <div className="mt-3 flex items-start gap-3">
                     {receipt.ad.image_url ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={receipt.ad.image_url}
-                        alt=""
-                        referrerPolicy="no-referrer"
-                        className="h-16 w-16 shrink-0 rounded-xl border border-amber-200 bg-white object-cover"
-                      />
+                      <img src={receipt.ad.image_url} alt="" referrerPolicy="no-referrer" className="h-16 w-16 shrink-0 rounded-xl border border-amber-200 bg-white object-cover" />
                     ) : (
                       <div className="flex h-16 w-16 shrink-0 items-center justify-center rounded-xl border border-amber-200 bg-white text-2xl">🏪</div>
                     )}
@@ -260,16 +252,12 @@ export default function ReceiptPage({ params }: { params: Promise<{ token: strin
                     </div>
                   </div>
                   <div className="mt-4 grid grid-cols-2 gap-2">
-                    <CtaButton
-                      href={receipt.ad.phone_cta ? `tel:${receipt.ad.phone_cta}` : null}
-                      onClick={() => trackClick(receipt.ad!, receipt.transaction_id)}
-                      label="📞 Call"
-                    />
+                    <CtaButton href={receipt.ad.phone_cta ? `tel:${receipt.ad.phone_cta}` : null} onClick={() => trackClick(receipt.ad!, receipt.transaction_id)} label={t("receipt.call")} />
                     <CtaButton
                       href={receipt.ad.location_cta ? mapsHref(receipt.ad.location_cta) : null}
                       external
                       onClick={() => trackClick(receipt.ad!, receipt.transaction_id)}
-                      label="📍 View Location"
+                      label={t("receipt.location")}
                     />
                   </div>
                 </section>
@@ -277,13 +265,13 @@ export default function ReceiptPage({ params }: { params: Promise<{ token: strin
 
               <div className="flex flex-col gap-2">
                 <button
-                  onClick={() => saveReceiptImage(receipt)}
+                  onClick={() => saveReceiptImage(receipt, t, lang)}
                   className="flex items-center justify-center gap-2 rounded-2xl border-2 border-slate-300 bg-white py-3.5 font-semibold text-slate-700 active:bg-slate-50"
                 >
-                  <Download className="h-5 w-5" /> Save Digital Receipt
+                  <Download className="h-5 w-5" /> {t("receipt.save")}
                 </button>
                 <button onClick={close} className="rounded-2xl bg-emerald-600 py-3.5 font-bold text-white active:bg-emerald-700">
-                  Done / Close
+                  {t("receipt.done")}
                 </button>
               </div>
             </div>
@@ -294,26 +282,11 @@ export default function ReceiptPage({ params }: { params: Promise<{ token: strin
   );
 }
 
-function CtaButton({
-  href,
-  label,
-  external,
-  onClick,
-}: {
-  href: string | null;
-  label: string;
-  external?: boolean;
-  onClick: () => void;
-}) {
+function CtaButton({ href, label, external, onClick }: { href: string | null; label: string; external?: boolean; onClick: () => void }) {
   const cls = "flex items-center justify-center rounded-xl border border-amber-300 bg-white py-2.5 text-sm font-semibold text-amber-800";
   if (!href) return <span className={`${cls} opacity-40`}>{label}</span>;
   return (
-    <a
-      href={href}
-      onClick={onClick}
-      {...(external ? { target: "_blank", rel: "noopener noreferrer" } : {})}
-      className={`${cls} active:bg-amber-100`}
-    >
+    <a href={href} onClick={onClick} {...(external ? { target: "_blank", rel: "noopener noreferrer" } : {})} className={`${cls} active:bg-amber-100`}>
       {label}
     </a>
   );

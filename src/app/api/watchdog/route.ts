@@ -16,7 +16,7 @@ export async function GET(req: Request) {
   if (!isUuid(merchantId) || !TYPES.includes(type) || Number.isNaN(Date.parse(since))) {
     return NextResponse.json({ error: "merchant_id, type and since are required" }, { status: 400 });
   }
-  const guard = await requireMerchant(merchantId);
+  const guard = await requireMerchant(merchantId, { owner: true });
   if (!guard.ok) return guard.res;
   try {
     const { count, error } = await getAdminClient()

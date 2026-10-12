@@ -1,0 +1,36 @@
+import { define } from "../core";
+
+export const download = define(
+  {
+    "download.title": "Get the 2Pay Merchant app",
+    "download.sub": "A tap-to-pay terminal for Android phones, with your whole business in one app.",
+    "download.version": "Version {v}",
+    "download.cta": "Download for Android",
+    "download.steps.title": "How to install",
+    "download.step1": "Tap Download. Your phone may warn that this kind of file can harm your device. That is normal for apps that are not from the Play Store.",
+    "download.step2": "Open the downloaded file, then allow installs from this source when Android asks.",
+    "download.step3": "Open 2Pay Merchant and sign in with your phone number.",
+    "download.step4": "For tap-to-pay, turn NFC on in Settings and keep the screen on during a sale.",
+    "download.requires": "Needs Android 6.0 or newer. Tap-to-pay needs a phone with NFC.",
+    "download.iphone": "On an iPhone? Customers can pay from any iPhone, and merchants can use the terminal in Safari with the QR code.",
+    "download.fingerprint": "File fingerprint (SHA-256)",
+    "download.share": "Share this page with your staff",
+    "download.unavailable": "The download is not available right now. Please try again later.",
+  },
+  {
+    "download.title": "የ2Pay ነጋዴ መተግበሪያን ያግኙ",
+    "download.sub": "ለAndroid ስልኮች ንካ-እና-ክፈል ተርሚናል፣ መላው ንግድዎ በአንድ መተግበሪያ ውስጥ።",
+    "download.version": "ስሪት {v}",
+    "download.cta": "ለAndroid አውርድ",
+    "download.steps.title": "እንዴት መጫን እንደሚቻል",
+    "download.step1": "አውርድን ይጫኑ። ስልክዎ ይህ ዓይነቱ ፋይል መሣሪያዎን ሊጎዳ እንደሚችል ሊያስጠነቅቅ ይችላል። ከPlay Store ላልሆኑ መተግበሪያዎች ይህ የተለመደ ነው።",
+    "download.step2": "የወረደውን ፋይል ይክፈቱ፣ ከዚያ Android ሲጠይቅ ከዚህ ምንጭ መጫንን ይፍቀዱ።",
+    "download.step3": "2Pay ነጋዴን ይክፈቱና በስልክ ቁጥርዎ ይግቡ።",
+    "download.step4": "ለንካ-እና-ክፈል፣ በቅንብሮች ውስጥ NFCን ያብሩና በሽያጭ ጊዜ ማያውን ክፍት ያድርጉ።",
+    "download.requires": "Android 6.0 ወይም ከዚያ በላይ ያስፈልጋል። ንካ-እና-ክፈል NFC ያለው ስልክ ይፈልጋል።",
+    "download.iphone": "iPhone ነው? ደንበኞች ከማንኛውም iPhone መክፈል ይችላሉ፤ ነጋዴዎችም ተርሚናሉን በSafari በQR ኮድ መጠቀም ይችላሉ።",
+    "download.fingerprint": "የፋይል የጣት አሻራ (SHA-256)",
+    "download.share": "ይህን ገጽ ለሠራተኞችዎ ያጋሩ",
+    "download.unavailable": "ማውረዱ አሁን አይገኝም። እባክዎ በኋላ ይሞክሩ።",
+  },
+);
