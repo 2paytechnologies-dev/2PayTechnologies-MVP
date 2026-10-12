@@ -17,35 +17,52 @@ function New-Canvas([int]$size) {
   return @{ bmp = $bmp; g = $g }
 }
 
-function Rounded-Path([int]$size, [double]$radiusFrac) {
-  $r = [int]($size * $radiusFrac); $d = $r * 2
+# Rounded rectangle with its top-left at ($x,$y), $w wide, corner radius $r.
+function Rounded-Rect([double]$x, [double]$y, [double]$w, [double]$r) {
+  $d = [Math]::Max(1, $r * 2)
   $p = New-Object System.Drawing.Drawing2D.GraphicsPath
-  $p.AddArc(0, 0, $d, $d, 180, 90); $p.AddArc($size - $d - 1, 0, $d, $d, 270, 90)
-  $p.AddArc($size - $d - 1, $size - $d - 1, $d, $d, 0, 90); $p.AddArc(0, $size - $d - 1, $d, $d, 90, 90)
+  $p.AddArc($x, $y, $d, $d, 180, 90); $p.AddArc($x + $w - $d, $y, $d, $d, 270, 90)
+  $p.AddArc($x + $w - $d, $y + $w - $d, $d, $d, 0, 90); $p.AddArc($x, $y + $w - $d, $d, $d, 90, 90)
   $p.CloseFigure(); return $p
 }
 
-# shape: 'rounded' (rounded square, transparent corners), 'square' (full bleed), 'circle', or 'none' (logo only, transparent)
+# shape: 'rounded' (rounded square, transparent corners), 'circle', 'square' (full bleed), or 'none' (logo only, transparent).
+# 'rounded', 'circle' and 'ring-square' get a white edge all the way round; 'square' (maskable) does not, because
+# the phone crops it. The white edge is $ring of the icon size, at least 1 pixel.
+$ring = 0.045
 function Save-Icon([string]$path, [int]$size, [double]$scale, [string]$shape) {
   $c = New-Canvas $size
   $brush = New-Object System.Drawing.SolidBrush $blue
+  $white = New-Object System.Drawing.SolidBrush ([System.Drawing.Color]::White)
+  $w = [Math]::Max(1.0, $size * $ring); $full = $size - 1
   switch ($shape) {
-    'rounded' { $c.g.FillPath($brush, (Rounded-Path $size 0.225)) }
+    'rounded' {
+      $r = $size * 0.225
+      $c.g.FillPath($white, (Rounded-Rect 0 0 $full $r))
+      $c.g.FillPath($brush, (Rounded-Rect $w $w ($full - 2 * $w) ([Math]::Max(1, $r - $w))))
+    }
+    'circle' {
+      $c.g.FillEllipse($white, 0, 0, $full, $full)
+      $c.g.FillEllipse($brush, $w, $w, $full - 2 * $w, $full - 2 * $w)
+    }
+    'ring-square' {
+      $c.g.FillRectangle($white, 0, 0, $size, $size)
+      $c.g.FillRectangle($brush, $w, $w, $size - 2 * $w, $size - 2 * $w)
+    }
     'square'  { $c.g.FillRectangle($brush, 0, 0, $size, $size) }
-    'circle'  { $c.g.FillEllipse($brush, 0, 0, $size - 1, $size - 1) }
   }
   $d = [int]($size * $scale); $o = [int](($size - $d) / 2)
   $c.g.DrawImage($logo, $o, $o, $d, $d)
   New-Item -ItemType Directory -Force (Split-Path $path) | Out-Null
   $c.bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
-  $c.g.Dispose(); $c.bmp.Dispose(); $brush.Dispose()
+  $c.g.Dispose(); $c.bmp.Dispose(); $brush.Dispose(); $white.Dispose()
 }
 
 # --- Web: favicon / PWA / iOS home screen
 Save-Icon "$Repo\public\icons\icon-192.png" 192 0.82 'rounded'
 Save-Icon "$Repo\public\icons\icon-512.png" 512 0.82 'rounded'
 Save-Icon "$Repo\public\icons\maskable-512.png" 512 0.62 'square'      # maskable: logo inside the 80% safe zone, full bleed
-Save-Icon "$Repo\public\icons\apple-touch-icon.png" 180 0.74 'square'   # iOS rounds the corners itself
+Save-Icon "$Repo\public\icons\apple-touch-icon.png" 180 0.74 'ring-square'   # iOS rounds the corners itself
 
 # --- favicon.ico (PNG-compressed entries at 16, 32 and 48)
 $sizes = 16, 32, 48; $pngs = @()
