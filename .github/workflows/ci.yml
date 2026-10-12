@@ -60,9 +60,9 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - uses: android-actions/setup-android@v3
+      # GitHub's Ubuntu runners already ship the Android SDK (ANDROID_HOME) with licences accepted.
       - name: Tap protocol unit tests
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew testDebugUnitTest --no-daemon
+          ./gradlew testDebugUnitTest --no-daemon --console=plain
