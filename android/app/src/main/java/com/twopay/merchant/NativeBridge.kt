@@ -5,9 +5,12 @@ import android.content.Context
 import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
+import android.media.audiofx.LoudnessEnhancer
 import android.nfc.NfcAdapter
 import android.os.Build
+import android.os.Bundle
 import android.os.Environment
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -28,6 +31,11 @@ import java.util.Locale
  * The WebView only ever loads the 2Pay site (see MainActivity), and every input here is validated.
  */
 class NativeBridge(private val activity: MainActivity) {
+
+    private companion object {
+        const val CHIME_LEVEL = 0.8        // fraction of full scale (was 0.55)
+        const val SPEECH_BOOST_MB = 600    // +6 dB on the spoken word, in millibels
+    }
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -135,12 +143,25 @@ class NativeBridge(private val activity: MainActivity) {
         }
     }
 
+    private var louder: LoudnessEnhancer? = null
+
     private fun say(text: String, lang: String) {
         val locale = Locale.forLanguageTag(lang.ifEmpty { "en" })
         val engine = tts ?: return
         if (engine.isLanguageAvailable(locale) >= TextToSpeech.LANG_AVAILABLE) {
             engine.language = locale
-            engine.speak(text.take(200), TextToSpeech.QUEUE_FLUSH, null, "twopay-speak")
+            val params = Bundle().apply { putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1f) }
+            // Speech engines already play at full level, so lift it a few dB with an audio effect on this utterance's own session.
+            try {
+                louder?.release()
+                louder = null
+                val session = (activity.getSystemService(Context.AUDIO_SERVICE) as AudioManager).generateAudioSessionId()
+                params.putInt(TextToSpeech.Engine.KEY_PARAM_SESSION_ID, session)
+                louder = LoudnessEnhancer(session).apply { setTargetGain(SPEECH_BOOST_MB); enabled = true }
+            } catch (_: Exception) {
+                params.remove(TextToSpeech.Engine.KEY_PARAM_SESSION_ID)
+            }
+            engine.speak(text.take(200), TextToSpeech.QUEUE_FLUSH, params, "twopay-speak")
         }
     }
 
@@ -187,7 +208,7 @@ class NativeBridge(private val activity: MainActivity) {
                         val t = i.toDouble() / rate
                         val attack = minOf(1.0, i / (rate * 0.012))      // 12 ms fade-in: no click
                         val release = minOf(1.0, (n - i) / (rate * 0.12)) // gentle fade-out
-                        (Math.sin(2 * Math.PI * freq * t) * 0.55 * attack * release * Short.MAX_VALUE).toInt().toShort()
+                        (Math.sin(2 * Math.PI * freq * t) * CHIME_LEVEL * attack * release * Short.MAX_VALUE).toInt().toShort()
                     }
                 }
                 val data = tone(880.0, 170) + tone(1318.5, 330)
@@ -239,6 +260,8 @@ class NativeBridge(private val activity: MainActivity) {
     }
 
     fun shutdown() {
+        louder?.release()
+        louder = null
         tts?.shutdown()
         tts = null
     }

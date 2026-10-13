@@ -55,24 +55,45 @@ function tone() {
   });
 }
 
-const WORD = { en: { text: "Paid", tag: "en" }, am: { text: "ተከፍሏል", tag: "am" } } as const;
+/** The chime sounds the instant the payment clears; the spoken word follows this long after it starts (the chime itself lasts about half a second). */
+export const VOICE_DELAY_MS = 1500;
 
-/** Browser speech. Falls back to English "Paid" when the device has no Amharic voice, so there is always a voice. */
+/** What is said, and in which voice. */
+export interface Utterance {
+  text: string;
+  /** Language of the voice that should read it. */
+  voice: "en" | "am";
+}
+
+/**
+ * The word for the sale: "Paid" for English, "ተከፍሏል" for Amharic. A phone without an Amharic voice cannot read the
+ * Ethiopic script, so its English voice is given the same word spelled the way it is pronounced, so the merchant still
+ * hears Amharic, not English. (Change AMHARIC_SPELLED if a different spelling sounds closer on the phones you use.)
+ */
+export const AMHARIC_SCRIPT = "ተከፍሏል";
+export const AMHARIC_SPELLED = "Teke filwal";
+
+export function utteranceFor(lang: Lang, haveAmharicVoice: boolean): Utterance {
+  if (lang === "en") return { text: "Paid", voice: "en" };
+  return haveAmharicVoice ? { text: AMHARIC_SCRIPT, voice: "am" } : { text: AMHARIC_SPELLED, voice: "en" };
+}
+
+/** Browser speech. */
 function speakInBrowser(lang: Lang) {
   try {
     const synth = window.speechSynthesis;
     if (!synth) return;
     const voices = synth.getVoices();
     const find = (tag: string) => voices.find((v) => v.lang.toLowerCase().startsWith(tag));
-    const wanted = WORD[lang];
-    const voice = find(wanted.tag);
-    const use = voice ? { word: wanted, voice } : { word: WORD.en, voice: find("en") };
-    const u = new SpeechSynthesisUtterance(use.word.text);
-    if (use.voice) {
-      u.voice = use.voice;
-      u.lang = use.voice.lang;
+    const u0 = utteranceFor(lang, !!find("am"));
+    const voice = find(u0.voice);
+    const u = new SpeechSynthesisUtterance(u0.text);
+    u.volume = 1;
+    if (voice) {
+      u.voice = voice;
+      u.lang = voice.lang;
     } else {
-      u.lang = use.word.tag;
+      u.lang = u0.voice;
     }
     synth.cancel();
     synth.speak(u);
@@ -86,27 +107,27 @@ function speakInApp(lang: Lang) {
   try {
     const native = getNative();
     if (!native) return;
-    const haveVoice = typeof native.canSpeak === "function" ? native.canSpeak(WORD[lang].tag) : true;
-    const w = haveVoice ? WORD[lang] : WORD.en;
-    native.speak(w.text, w.tag);
+    const haveAm = typeof native.canSpeak === "function" ? native.canSpeak("am") : true;
+    const u = utteranceFor(lang, haveAm);
+    native.speak(u.text, u.voice);
   } catch {
     /* ignore */
   }
 }
 
-/** Whether this device can speak the word in that language (otherwise English "Paid" is used instead). */
+/** Whether this device has a real Amharic voice (otherwise the English voice reads the spelled-out word). */
 export function hasVoiceFor(lang: Lang): boolean {
   try {
-    const native = getNative();
-    if (native) return typeof native.canSpeak === "function" ? native.canSpeak(WORD[lang].tag) : true;
     if (lang === "en") return true;
-    return !!window.speechSynthesis?.getVoices().some((v) => v.lang.toLowerCase().startsWith(WORD[lang].tag));
+    const native = getNative();
+    if (native) return typeof native.canSpeak === "function" ? native.canSpeak("am") : true;
+    return !!window.speechSynthesis?.getVoices().some((v) => v.lang.toLowerCase().startsWith("am"));
   } catch {
     return false;
   }
 }
 
-/** Chime now, the spoken word right after it (the chime lasts about half a second). */
+/** Chime now; the spoken word VOICE_DELAY_MS later. */
 export function playSettlementChime(lang: Lang = "en") {
   try {
     const native = getNative();
@@ -114,7 +135,7 @@ export function playSettlementChime(lang: Lang = "en") {
     if (native && typeof native.chime === "function") native.chime();
     else tone();
     if (native) native.vibrate(250);
-    setTimeout(() => (native ? speakInApp(lang) : speakInBrowser(lang)), 450);
+    setTimeout(() => (native ? speakInApp(lang) : speakInBrowser(lang)), VOICE_DELAY_MS);
   } catch {
     /* ignore */
   }
