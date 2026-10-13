@@ -5,7 +5,7 @@ import { QRCodeSVG } from "qrcode.react";
 import Link from "next/link";
 import { Check, CheckCircle2, Copy, Delete, Loader2, Nfc, QrCode, RefreshCw, RotateCcw, Route, ScanLine, TriangleAlert, Volume2 } from "lucide-react";
 import { isPaid, type Transaction } from "@/lib/types";
-import { primeAudio, keepAudioAlive, playSettlementChime, hasVoiceFor } from "@/lib/chime";
+import { primeAudio, keepAudioAlive, playSettlementChime, preloadAnnouncement } from "@/lib/chime";
 import { clearPayLink, keepScreenAwake, nativeInfo, presentPayLink, type NativeInfo } from "@/lib/native";
 import { eatDateKey, eatDayStartISO, fmt } from "@/lib/format";
 import { useI18n, useT, type Key } from "@/lib/i18n";
@@ -78,11 +78,13 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
   const rotationsRef = useRef(0);
   const seenPaid = useRef<Set<string> | null>(null); // ids of paid sales already announced
   const { lang } = useI18n();
-  const [noVoice, setNoVoice] = useState(false); // after a sound test: this phone has no voice for the merchant's language
   const langRef = useRef(lang); // the announcement is spoken in the language the merchant is using
   useEffect(() => {
     langRef.current = lang;
   }, [lang]);
+  useEffect(() => {
+    preloadAnnouncement(); // fetch the recorded Amharic word now, so it is ready when the first sale clears
+  }, []);
 
   useEffect(() => {
     tokens.current = new Set(nodes.map((n) => n.token));
@@ -488,13 +490,11 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
               onClick={() => {
                 primeAudio();
                 playSettlementChime(lang);
-                setNoVoice(!hasVoiceFor(lang));
               }}
               className="inline-flex items-center gap-1.5 rounded-full border border-slate-700 px-3 py-1.5 text-xs text-slate-300"
             >
               <Volume2 className="h-3.5 w-3.5" /> {t("terminal.sound.test")}
             </button>
-            {noVoice && lang === "am" && <p className="text-center text-xs text-amber-400">{t("terminal.sound.noVoice")}</p>}
           </div>
 
           <section className="rounded-2xl border border-slate-800 bg-slate-900 p-4">

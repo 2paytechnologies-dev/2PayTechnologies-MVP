@@ -10,6 +10,55 @@ import type { Lang } from "@/lib/i18n/core";
 
 let ctx: AudioContext | null = null;
 
+/**
+ * The Amharic "ተከፍሏል" is a recorded clip (public/sounds/paid-am.mp3), because phones have no Amharic voice to read it.
+ * The bytes are fetched when the terminal opens and decoded as soon as the audio context exists.
+ */
+const CLIP_URL = "/sounds/paid-am.mp3?v=1";
+let clipBytes: ArrayBuffer | null = null;
+let clipBuffer: AudioBuffer | null = null;
+let clipFetching = false;
+
+function decodeClip() {
+  if (!ctx || !clipBytes || clipBuffer) return;
+  const bytes = clipBytes.slice(0); // decodeAudioData consumes its input
+  ctx.decodeAudioData(bytes).then((b) => (clipBuffer = b)).catch(() => {});
+}
+
+/** Call when the terminal opens. Safe to call repeatedly. */
+export function preloadAnnouncement() {
+  try {
+    if (clipBytes) return decodeClip();
+    if (clipFetching || typeof window === "undefined") return;
+    clipFetching = true;
+    fetch(CLIP_URL)
+      .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject()))
+      .then((b) => {
+        clipBytes = b;
+        decodeClip();
+      })
+      .catch(() => {})
+      .finally(() => (clipFetching = false));
+  } catch {
+    /* the spelled-out fallback is used instead */
+  }
+}
+
+/** Plays the recorded Amharic word through the page's audio. False when it is not ready (the caller falls back). */
+function playClip(): boolean {
+  if (!ctx || !clipBuffer) return false;
+  try {
+    if (ctx.state === "suspended") void ctx.resume();
+    const src = ctx.createBufferSource();
+    src.buffer = clipBuffer;
+    src.connect(ctx.destination);
+    src.start();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function primeAudio() {
   try {
     if (!ctx) {
@@ -17,6 +66,7 @@ export function primeAudio() {
       if (!Ctor) return;
       ctx = new Ctor();
     }
+    preloadAnnouncement();
     if (ctx.state === "suspended") void ctx.resume();
     // A silent one-sample buffer fully unlocks output on iOS Safari.
     const src = ctx.createBufferSource();
@@ -66,9 +116,9 @@ export interface Utterance {
 }
 
 /**
- * The word for the sale: "Paid" for English, "ተከፍሏል" for Amharic. A phone without an Amharic voice cannot read the
- * Ethiopic script, so its English voice is given the same word spelled the way it is pronounced, so the merchant still
- * hears Amharic, not English. (Change AMHARIC_SPELLED if a different spelling sounds closer on the phones you use.)
+ * The word for the sale: "Paid" (English voice) for English; for Amharic the recorded clip of "ተከፍሏል" (see above).
+ * Only if that clip cannot be played does Amharic fall back to a voice: a real Amharic voice, or the phone's English
+ * voice reading the word spelled the way it is pronounced (never the English word "Paid").
  */
 export const AMHARIC_SCRIPT = "ተከፍሏል";
 export const AMHARIC_SPELLED = "Teke filwal";
@@ -78,9 +128,10 @@ export function utteranceFor(lang: Lang, haveAmharicVoice: boolean): Utterance {
   return haveAmharicVoice ? { text: AMHARIC_SCRIPT, voice: "am" } : { text: AMHARIC_SPELLED, voice: "en" };
 }
 
-/** Browser speech. */
+/** Browser: the recorded clip for Amharic, speech for English (and the last-resort fallback for Amharic). */
 function speakInBrowser(lang: Lang) {
   try {
+    if (lang === "am" && playClip()) return;
     const synth = window.speechSynthesis;
     if (!synth) return;
     const voices = synth.getVoices();
@@ -102,28 +153,23 @@ function speakInBrowser(lang: Lang) {
   }
 }
 
-/** The Android app speaks natively (its WebView has no speechSynthesis). Older apps lack canSpeak and just try. */
+/**
+ * The Android app (its WebView has no speechSynthesis). Amharic: the app plays the recorded clip itself (2.1.7+), else the
+ * page plays it, else the phone's voice. English: the phone's English voice says "Paid".
+ */
 function speakInApp(lang: Lang) {
   try {
     const native = getNative();
     if (!native) return;
+    if (lang === "am") {
+      if (typeof native.playPaidAmharic === "function" && native.playPaidAmharic()) return;
+      if (playClip()) return;
+    }
     const haveAm = typeof native.canSpeak === "function" ? native.canSpeak("am") : true;
     const u = utteranceFor(lang, haveAm);
     native.speak(u.text, u.voice);
   } catch {
     /* ignore */
-  }
-}
-
-/** Whether this device has a real Amharic voice (otherwise the English voice reads the spelled-out word). */
-export function hasVoiceFor(lang: Lang): boolean {
-  try {
-    if (lang === "en") return true;
-    const native = getNative();
-    if (native) return typeof native.canSpeak === "function" ? native.canSpeak("am") : true;
-    return !!window.speechSynthesis?.getVoices().some((v) => v.lang.toLowerCase().startsWith("am"));
-  } catch {
-    return false;
   }
 }
 

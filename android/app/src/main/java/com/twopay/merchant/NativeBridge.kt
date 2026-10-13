@@ -7,6 +7,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.media.MediaPlayer
 import android.media.audiofx.LoudnessEnhancer
 import android.nfc.NfcAdapter
 import android.os.Build
@@ -238,6 +239,34 @@ class NativeBridge(private val activity: MainActivity) {
                 chiming = false
             }
         }.start()
+    }
+
+    /**
+     * Plays the recorded Amharic "ተከፍሏል" (res/raw/paid_am.mp3). Phones have no Amharic voice, so the word is a recording.
+     * Returns false if it could not be started, so the page can fall back.
+     */
+    @JavascriptInterface
+    fun playPaidAmharic(): Boolean {
+        return try {
+            val afd = activity.resources.openRawResourceFd(R.raw.paid_am) ?: return false
+            val player = MediaPlayer()
+            player.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build(),
+            )
+            player.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+            afd.close()
+            player.setVolume(1f, 1f)
+            player.setOnCompletionListener { it.release() }
+            player.setOnErrorListener { mp, _, _ -> mp.release(); true }
+            player.setOnPreparedListener { it.start() }
+            player.prepareAsync()
+            true
+        } catch (_: Exception) {
+            false
+        }
     }
 
     @JavascriptInterface

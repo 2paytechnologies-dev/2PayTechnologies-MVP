@@ -1,8 +1,8 @@
 {
-    "version":  "2.1.6",
+    "version":  "2.1.7",
     "minVersion":  "2.0.0",
-    "apk":  "/downloads/2pay-merchant-2.1.6.apk",
-    "notes":  "Amharic sale announcement, louder voice, chime then voice 1.5s later.",
-    "sha256":  "61a5cd5e0a3582ef39299e3164f36bb343be78d956d3a4643c500d5a98154756",
-    "size":  1773763
+    "apk":  "/downloads/2pay-merchant-2.1.7.apk",
+    "notes":  "Recorded Amharic ተከፍሏል on the Amharic interface.",
+    "sha256":  "6483ee4f263557224f81ea3fd23fc9e9983ad02fa4f0588c8300db3983de0362",
+    "size":  1785843
 }
