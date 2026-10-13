@@ -1,8 +1,8 @@
 {
-    "version":  "2.2.0",
+    "version":  "2.3.0",
     "minVersion":  "2.0.0",
-    "apk":  "/downloads/2pay-merchant-2.2.0.apk",
-    "notes":  "Team members: waiters and cashiers, activation links, tips and shift ledgers.",
-    "sha256":  "a271841c2343f2038878d9325d88f554f7bda41cc671c65151687fb374417a6d",
-    "size":  1788579
+    "apk":  "/downloads/2pay-merchant-2.3.0.apk",
+    "notes":  "Waiter app deep link (twopay://activate), terminal lock for team members, install id.",
+    "sha256":  "020dbf8f62e92afcba5e86742b65ac97f733775d5c3fd2268da75565bbde9ccc",
+    "size":  1790305
 }

@@ -283,6 +283,26 @@ class NativeBridge(private val activity: MainActivity) {
         activity.runOnUiThread { activity.printPage() }
     }
 
+    /**
+     * A random id for THIS installation (made once, kept in the app's private storage, gone on uninstall). It is what
+     * "this phone" means for a team member's account: the server stores only a hash of it.
+     */
+    @JavascriptInterface
+    fun deviceId(): String {
+        val prefs = activity.getSharedPreferences("twopay_node", Context.MODE_PRIVATE)
+        prefs.getString("device_id", null)?.let { return it }
+        val bytes = ByteArray(24).also { java.security.SecureRandom().nextBytes(it) }
+        val id = Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+        prefs.edit().putString("device_id", id).apply()
+        return id
+    }
+
+    /** Called by the page for team members (not the owner): keep this phone on the payment terminal only. */
+    @JavascriptInterface
+    fun setNodeMode(on: Boolean) {
+        activity.nodeMode = on
+    }
+
     @JavascriptInterface
     fun reload() {
         activity.runOnUiThread { activity.loadStart() }

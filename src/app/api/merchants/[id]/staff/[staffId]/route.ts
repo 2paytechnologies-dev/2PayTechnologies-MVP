@@ -5,7 +5,7 @@ import { isUuid } from "@/lib/settlement";
 import { audit } from "@/lib/audit";
 import { sendSms, smsConfigured } from "@/lib/sms";
 import { hashToken, inviteExpiry, newInviteToken, type StaffRole } from "@/lib/team";
-import { inviteSms, siteOrigin } from "@/lib/team-invite";
+import { appLinkFor, inviteSms, siteOrigin } from "@/lib/team-invite";
 
 export const dynamic = "force-dynamic";
 
@@ -39,7 +39,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
       smsSent = await sendSms(data.phone, inviteSms({ business: m?.business_name ?? "Your business", teamNo: data.team_no ?? "", role: data.role as StaffRole, link }));
     }
     await audit(admin, guard.session, req, { action: "staff.reissue", targetType: "staff", targetId: staffId, merchantId: id, details: { name: data.name, team_no: data.team_no } });
-    return NextResponse.json({ id: data.id, team_no: data.team_no, status: "INVITED", invite_link: link, invite_expires_at: inviteExpiry(), sms_sent: smsSent });
+    return NextResponse.json({ id: data.id, team_no: data.team_no, status: "INVITED", invite_link: link, app_link: appLinkFor(token), invite_expires_at: inviteExpiry(), sms_sent: smsSent });
   } catch (e) {
     if (e instanceof AdminConfigError) return NextResponse.json({ error: "Server misconfigured" }, { status: 500 });
     throw e;

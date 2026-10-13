@@ -22,6 +22,8 @@ interface Bridge {
   canSpeak?(lang: string): boolean; // added in 2.1.4: false when the phone has no voice for that language
   chime?(): void; // added in 2.1.5: the settlement chime played by the phone itself
   playPaidAmharic?(): boolean; // added in 2.1.7: plays the recorded Amharic ተከፍሏል
+  deviceId?(): string; // added in 2.3.0: this installation's own random id (team sign-in binds to it)
+  setNodeMode?(on: boolean): void; // added in 2.3.0: keep the phone on the payment terminal (waiters and cashiers)
   vibrate(ms: number): void;
   reload(): void;
   print?(): void; // added in 2.1.0; older apps simply do not have it
@@ -56,6 +58,15 @@ export function presentPayLink(url: string): boolean {
 export function clearPayLink() {
   try {
     getNative()?.clearPayUrl();
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Waiters and cashiers: lock the app to the payment terminal. A no-op in browsers and older apps. */
+export function setNodeMode(on: boolean) {
+  try {
+    getNative()?.setNodeMode?.(on);
   } catch {
     /* ignore */
   }

@@ -40,6 +40,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
+            <!-- A team member's activation link from the owner: twopay://activate/<token> opens straight inside the app. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="twopay" android:host="activate" />
+            </intent-filter>
+
             <!-- Merchant links open in the app. Payer links (/pay/...) are deliberately NOT claimed. -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />

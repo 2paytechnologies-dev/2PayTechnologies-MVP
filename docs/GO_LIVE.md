@@ -11,10 +11,11 @@ Work top to bottom. Each section says what turning it on does, so nothing is swi
 5. `supabase/v2_1.sql` : **V2.1. Run this BEFORE pushing the V2.1 code.** Adds business-details (KYC) columns, shop-QR flag, payer
    contacts (kept apart from the public sales table), staff, refund requests, audit log, rate limiting, error log and routing history.
 6. `supabase/v2_2.sql` : **V2.2 (team members and tips). Run this BEFORE pushing the V2.2 code.** Adds team numbers, activation links (stored as hashes), phone binding, a waiter id and a tip amount on every sale. `/api/health` reports `"schema":"outdated"` and names this file until it has run.
-7. **Deploy this release**, then `supabase/lockdown_reads.sql`. It removes all browser access to your data with the public key and
+7. `supabase/v2_3.sql` : **V2.3 (settlement vault and routing hub). Run this BEFORE pushing the V2.3 code.** Adds the owner step-up purpose, a tamper-evident log of every change to the receiving accounts, and the customer's chosen app on each sale.
+8. **Deploy this release**, then `supabase/lockdown_reads.sql`. (If you ever re-run `all_migrations.sql` on a live system, run the lockdown again afterwards.) It removes all browser access to your data with the public key and
    makes "mark a sale paid" server-only. **Do not run it before deploying**: older pages read the database directly and would break.
 
-(`supabase/all_migrations.sql` bundles steps 1-6, without the lockdown.)
+(`supabase/all_migrations.sql` bundles steps 1-7, without the lockdown.)
 
 ## 2. Environment variables (Vercel, then redeploy)
 
@@ -33,6 +34,8 @@ Work top to bottom. Each section says what turning it on does, so nothing is swi
 | `RAIL_ROUTING`, `RAIL_APP_LINKS` | smart routing across providers; "open my bank app" links (both optional) |
 | `STATIC_QR_MAX_ETB` | cap for amounts typed on a shop QR page (default 20000) |
 | `RETENTION_PURGE_DAYS` | turns on the daily deletion of old unpaid links and payer phone numbers; leave unset until counsel agrees the period |
+| `RAIL_APP_LINKS` (object form), `ETHQR_TEMPLATE` | open the customer's own app, pre-filled (formats come from each bank/wallet and EthSwitch; see `docs/VAULT_NODE_HUB.md`) |
+| `ALLOW_BROWSER_NODES` | leave unset: waiters must use the Android app (set `true` only for testing) |
 | `NEXT_PUBLIC_LEGAL_CONTACT` | contact shown on the Terms and Privacy pages |
 
 Receipts by SMS and one-time codes both use `SMS_WEBHOOK_URL`. Without it, receipts are skipped (the sale is unaffected).
@@ -45,6 +48,9 @@ Receipts by SMS and one-time codes both use `SMS_WEBHOOK_URL`. Without it, recei
       provider merchant account.
 - [ ] SMS gateway delivers a code to a real phone; one merchant registered and signed in with `AUTH_ENFORCED=true`.
 - [ ] **Team nodes:** add a waiter, open the activation link on a second phone, confirm the code, take a sale, pay it with a 10 % tip, and check the cashier's feed names the waiter and shows the tip, the waiter's own ledger shows only theirs, and the owner's Team tab shows revenue and tips per person. Then remove the waiter and confirm their phone can no longer start a sale. See `docs/TEAM_NODE_TIPS.md`.
+- [ ] **Settlement vault:** with sign-in enforced, remove or switch a receiving account as the owner: the app asks for a code, the code arrives ONLY on the registered owner phone, the change goes through, and an SMS tells the owner. A cashier or waiter cannot even request the code.
+- [ ] **Waiter app:** install the APK on a real phone, open a waiter's link from SMS / WhatsApp: it opens inside the app, activates, and the phone can tap to pay. Opening the same kind of link in a browser must send the waiter to the app, not activate them.
+- [ ] `https://<site>/.well-known/assetlinks.json` loads (it makes https links open in the app).
 - [ ] An admin phone can open `/dashboard/admin`; a normal merchant is redirected away; one merchant cannot read another's
       transactions (`/api/transactions?merchant_id=<other>` returns 403).
 - [ ] With `lockdown_reads.sql` applied, `GET <supabase-url>/rest/v1/transactions` using the public key returns an error, not data.

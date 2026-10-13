@@ -9,6 +9,26 @@ export async function loadSettlement(merchantId: string): Promise<SettlementView
   return data as SettlementView;
 }
 
+/** The server wants the owner's one-time code before it changes where money goes (see the settlement vault). */
+export class StepUpRequiredError extends Error {
+  constructor() {
+    super("step-up required");
+  }
+}
+
+export async function requestStepUp(merchantId: string): Promise<{ challengeId: string; phoneMasked: string; devCode?: string }> {
+  const res = await fetch(`/api/merchants/${merchantId}/settlement/step-up/request`, { method: "POST" });
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(d.error ?? "request");
+  return { challengeId: d.challenge_id, phoneMasked: d.phone_masked, devCode: d.dev_code };
+}
+
+export async function verifyStepUp(merchantId: string, challengeId: string, code: string): Promise<void> {
+  const res = await fetch(`/api/merchants/${merchantId}/settlement/step-up/verify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ challenge_id: challengeId, code }) });
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(d.error ?? "verify");
+}
+
 async function save(merchantId: string, input: SettlementInput): Promise<SettlementView> {
   const res = await fetch(`/api/merchants/${merchantId}/settlement`, {
     method: "PUT",
@@ -16,6 +36,7 @@ async function save(merchantId: string, input: SettlementInput): Promise<Settlem
     body: JSON.stringify(input),
   });
   const data = await res.json().catch(() => ({}));
+  if (res.status === 403 && data.code === "STEP_UP_REQUIRED") throw new StepUpRequiredError();
   if (!res.ok) throw new Error(data.error ?? "save");
   return data as SettlementView;
 }

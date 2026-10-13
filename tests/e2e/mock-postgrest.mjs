@@ -3,7 +3,7 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 
-const TABLES = ["transactions", "merchants", "watchdog_events", "rail_events", "ad_impressions", "ad_campaigns", "merchant_staff", "refund_requests", "audit_log", "app_errors", "rail_attempts", "payer_contacts", "otp_challenges"];
+const TABLES = ["transactions", "merchants", "watchdog_events", "rail_events", "ad_impressions", "ad_campaigns", "merchant_staff", "refund_requests", "audit_log", "app_errors", "rail_attempts", "payer_contacts", "otp_challenges", "settlement_change_log"];
 const db = Object.fromEntries(TABLES.map((t) => [t, []]));
 const counters = new Map(); // rate_limit_hit
 

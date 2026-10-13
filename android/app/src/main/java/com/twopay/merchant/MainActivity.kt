@@ -29,6 +29,10 @@ import com.twopay.merchant.nfc.TwoPayHostApduService
  */
 class MainActivity : ComponentActivity() {
 
+    private companion object {
+        val TOKEN = Regex("^[A-Za-z0-9_-]{43}$")
+    }
+
     private lateinit var web: WebView
     private lateinit var bridge: NativeBridge
     private val siteHost = BuildConfig.SITE_HOST
@@ -77,15 +81,31 @@ class MainActivity : ComponentActivity() {
         openFromIntent(intent)
     }
 
-    /** Deep links (https on our host) open in-app; anything else falls back to the start page. */
+    /**
+     * Deep links open in-app. https links on our host load as they are. A team activation link
+     * `twopay://activate/<token>` becomes the activation page on our own host; the token must be exactly the shape we issue
+     * (43 URL-safe characters), so nothing else can be smuggled in. Anything else falls back to the start page.
+     */
     private fun openFromIntent(intent: Intent?) {
         val data = intent?.data
         if (data != null && data.scheme == "https" && data.host.equals(siteHost, ignoreCase = true)) {
             web.loadUrl(data.toString())
+        } else if (data != null && data.scheme == "twopay" && data.host == "activate") {
+            val token = data.pathSegments?.firstOrNull().orEmpty()
+            if (TOKEN.matches(token)) web.loadUrl("https://$siteHost/join/$token") else loadStart()
         } else {
             loadStart()
         }
     }
+
+    /**
+     * Node mode (waiters and cashiers): the app is a payment terminal and nothing else. It can only show the 2Pay terminal,
+     * sign-in and activation pages, and never hands anything to another app. The real lock is on the server (a team
+     * session is refused every settings, money-routing and staff call); this keeps the phone itself on the terminal too.
+     */
+    @Volatile var nodeMode = false
+
+    private fun allowedInNodeMode(path: String) = path.startsWith("/dashboard/merchant") || path.startsWith("/terminal") || path.startsWith("/signin") || path.startsWith("/join") || path.startsWith("/pay/")
 
     fun loadStart() {
         web.loadUrl(startUrl)
@@ -155,6 +175,7 @@ class MainActivity : ComponentActivity() {
             val uri = request.url
             val scheme = uri.scheme.orEmpty()
             val ours = (scheme == "https" || scheme == "http") && uri.host.equals(siteHost, ignoreCase = true)
+            if (nodeMode) return !(scheme == "file" || (ours && allowedInNodeMode(uri.path.orEmpty()))) // stay on the terminal; never hand off to another app
             if (ours || scheme == "file") return false // keep our own pages (and the offline page) in the app
             // Everything else (tel:, maps, other websites) is handed to the system, never loaded in this WebView.
             try {

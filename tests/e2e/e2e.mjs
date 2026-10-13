@@ -12,6 +12,8 @@ const A = "1f5f43ec-bbef-40da-87fe-797cd61d1e86";
 const B = "2a2a2a2a-0000-4000-8000-000000000002";
 const CRON = "cron-secret-for-tests";
 const now = Math.floor(Date.now() / 1000);
+const APP_UA = "Mozilla/5.0 (Linux; Android 14) TwoPayMerchantApp/2.3.0 e2e"; // the 2Pay Android app
+const BROWSER_UA = "Mozilla/5.0 (Linux; Android 14) Chrome/120.0 Mobile Safari/537.36"; // a normal phone browser
 
 let pass = 0, fail = 0;
 const failures = [];
@@ -25,7 +27,7 @@ const ownerB = await cookie(B, "+251911000002", "OWNER");
 const admin = await cookie(B, "+251711000111", "OWNER");
 
 async function call(method, path, { ck, body, headers = {}, raw = false } = {}) {
-  const r = await fetch(BASE + path, { method, redirect: "manual", headers: { ...(body !== undefined ? { "Content-Type": "application/json" } : {}), ...(ck ? { cookie: ck } : {}), ...headers }, body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body) });
+  const r = await fetch(BASE + path, { method, redirect: "manual", headers: { "user-agent": APP_UA, ...(body !== undefined ? { "Content-Type": "application/json" } : {}), ...(ck ? { cookie: ck } : {}), ...headers }, body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body) });
   let data = null;
   try { data = raw ? await r.text() : await r.json(); } catch { /* not json */ }
   return { status: r.status, data, headers: r.headers };
@@ -398,6 +400,117 @@ section("who sees what: waiter, cashier and owner");
   t("a removed waiter's session stops creating sales at once", (await call("POST", "/api/transactions", { ck: crew.w1ck, body: { merchant_id: A, amount: 5 } })).status === 403);
   const afterRm = await call("GET", `/api/team/ledger?${day}`, { ck: ownerA });
   t("past sales still name a removed waiter", (afterRm.data.lines ?? []).some((l) => l.name === "Abebe" && l.sales === 3));
+}
+section("settlement vault: changing where money goes needs the owner's code");
+{
+  await fetch(MOCK + "/__reset_limits");
+  const OWNER_PHONE = "+251911000001";
+  const sKey = `/api/merchants/${A}/settlement`;
+  const BANK = { id: "b0b0b0b0-0000-4000-8000-000000000001" }, WALLET = { id: "c0c0c0c0-0000-4000-8000-000000000002" };
+  const keepAll = { banks: [BANK], wallets: [WALLET], active_bank_id: BANK.id, active_wallet_id: WALLET.id };
+  const removeWallet = { banks: [BANK], wallets: [], active_bank_id: BANK.id, active_wallet_id: null };
+
+  t("an unchanged save needs no code", (await call("PUT", sKey, { ck: ownerA, body: keepAll })).status === 200);
+  const blocked = await call("PUT", sKey, { ck: ownerA, body: removeWallet });
+  t("removing an account is refused until the owner confirms", blocked.status === 403 && blocked.data.code === "STEP_UP_REQUIRED", JSON.stringify(blocked.data));
+  t("...and nothing was changed", (await db()).merchants.find((m) => m.id === A).saved_wallets.length === 1);
+  t("a cashier cannot ask for the code", (await call("POST", `${sKey}/step-up/request`, { ck: cashierA })).status === 403);
+  t("a waiter cannot ask for the code", (await call("POST", `${sKey}/step-up/request`, { ck: crew.w2ck })).status === 403);
+  t("another business's owner cannot touch this vault", (await call("PUT", sKey, { ck: ownerB, body: removeWallet })).status === 403);
+
+  const before = sms.length;
+  const rq = await call("POST", `${sKey}/step-up/request`, { ck: ownerA, body: { phone: "0911999999" } }); // a phone in the request is ignored
+  await wait(300);
+  const sent = sms.slice(before);
+  const code = sent.at(-1)?.message.match(/(\d{6})/)?.[1];
+  t("the code goes only to the registered owner phone, whatever the request says", rq.status === 200 && sent.length === 1 && sent[0].to === OWNER_PHONE && !!code, JSON.stringify(sent.map((m) => m.to)));
+  t("the reply shows only a masked number and no code", rq.status === 200 && String(rq.data.phone_masked).includes("•••") && !("dev_code" in rq.data) && !JSON.stringify(rq.data).includes("911000001"));
+  t("the message says what the code is for", /changing where your business receives money/i.test(sent[0]?.message ?? ""));
+
+  const wrong = await call("POST", `${sKey}/step-up/verify`, { ck: ownerA, body: { challenge_id: rq.data.challenge_id, code: code === "000000" ? "111111" : "000000" } });
+  t("a wrong code is refused", wrong.status === 400 && /incorrect/i.test(wrong.data.error ?? ""));
+  t("a sign-in code cannot be used as a step-up code", (await call("POST", `${sKey}/step-up/verify`, { ck: ownerA, body: { challenge_id: "11111111-1111-4111-8111-111111111111", code } })).status === 400);
+  const ok = await call("POST", `${sKey}/step-up/verify`, { ck: ownerA, body: { challenge_id: rq.data.challenge_id, code } });
+  const pass = (ok.headers.get("set-cookie") ?? "").match(/2pay_stepup=([^;]+)/)?.[1];
+  t("the right code gives a short-lived pass", ok.status === 200 && !!pass && /HttpOnly/i.test(ok.headers.get("set-cookie") ?? "") && /SameSite=strict/i.test(ok.headers.get("set-cookie") ?? ""));
+  t("a code works once", (await call("POST", `${sKey}/step-up/verify`, { ck: ownerA, body: { challenge_id: rq.data.challenge_id, code } })).status === 400);
+  const ck = `${ownerA}; 2pay_stepup=${pass}`;
+
+  const mBefore = sms.length;
+  const done = await call("PUT", sKey, { ck, body: removeWallet });
+  t("with the pass, the change goes through", done.status === 200 && done.data.saved_wallets.length === 0);
+  await wait(300);
+  t("the owner is told about the change by SMS", sms.slice(mBefore).some((m) => m.to === OWNER_PHONE && /was just changed/i.test(m.message)));
+  const forged = `${ownerA}; 2pay_stepup=${pass}x`;
+  const tampered = await call("PUT", sKey, { ck: forged, body: { banks: [], wallets: [], active_bank_id: null, active_wallet_id: null } });
+  t("a tampered pass is refused and nothing changes", tampered.status === 403 && tampered.data.code === "STEP_UP_REQUIRED" && (await db()).merchants.find((m) => m.id === A).saved_banks.length === 1);
+
+  // put the wallet back (a restored account counts as a change too, and the pass is still valid for a few minutes)
+  const restore = await call("PUT", sKey, { ck, body: { banks: [BANK], wallets: [{ id: WALLET.id, institution: "Telebirr", account_number: "+251911223344" }], active_bank_id: BANK.id, active_wallet_id: WALLET.id } });
+  t("the owner can put an account back while the pass is valid", restore.status === 200 && restore.data.active_wallet_id === WALLET.id);
+  const noPass = await call("PUT", sKey, { ck: ownerA, body: removeWallet });
+  t("without the pass, the same removal is refused again", noPass.status === 403 && noPass.data.code === "STEP_UP_REQUIRED" && (await db()).merchants.find((m) => m.id === A).saved_wallets.length === 1);
+
+  // first setup is free
+  const first = await call("PUT", `/api/merchants/${B}/settlement`, { ck: ownerB, body: { banks: [{ id: "d0d0d0d0-0000-4000-8000-000000000003", institution: "Awash Bank", account_number: "1000987654321" }], wallets: [], active_bank_id: "d0d0d0d0-0000-4000-8000-000000000003", active_wallet_id: null } });
+  t("the very first account can be set up without a code", first.status === 200 && first.data.active_bank_id === "d0d0d0d0-0000-4000-8000-000000000003", JSON.stringify(first.data).slice(0, 120));
+  t("...but changing it afterwards needs one", (await call("PUT", `/api/merchants/${B}/settlement`, { ck: ownerB, body: { banks: [], wallets: [], active_bank_id: null, active_wallet_id: null } })).data.code === "STEP_UP_REQUIRED");
+  const crossPass = await call("PUT", `/api/merchants/${B}/settlement`, { ck: `${ownerB}; 2pay_stepup=${pass}`, body: { banks: [], wallets: [], active_bank_id: null, active_wallet_id: null } });
+  t("a pass earned for one business does not open another", crossPass.status === 403 && crossPass.data.code === "STEP_UP_REQUIRED");
+
+  const actions = new Set((await db()).audit_log.map((r) => r.action));
+  for (const a of ["settlement.stepup", "settlement.blocked"]) t(`audit has ${a}`, actions.has(a));
+}
+
+section("customer routing hub: the customer picks their app, the server picks the merchant's account");
+{
+  const mk = async () => (await call("POST", "/api/transactions", { ck: ownerA, body: { merchant_id: A, amount: 100 } })).data.token;
+  const go = async (body) => { let r; const tok = await mk(); for (let i = 1; i <= 4; i++) { r = await call("POST", `/api/pay/${tok}/initiate`, { body: { phone: "0911223344", ...body } }); if (r.status < 500) break; await wait(2000 * i); } return { r, tok }; };
+  const row = async (tok) => (await db()).transactions.find((x) => x.token === tok);
+
+  const a = await go({ payer_app: "Telebirr" });
+  t("a Telebirr customer pays the merchant's wallet", a.r.status === 200 && (await row(a.tok)).settlement_method === "WALLET", a.r.data?.error);
+  t("the customer's own app is recorded on the sale", (await row(a.tok)).payer_app === "Telebirr");
+  const b = await go({ payer_app: "Dashen Bank" });
+  t("a Dashen customer pays the merchant's bank", b.r.status === 200 && (await row(b.tok)).settlement_method === "BANK" && (await row(b.tok)).payer_app === "Dashen Bank", b.r.data?.error);
+  const c = await go({ payer_app: "Awash Bank" });
+  t("an Awash customer pays the merchant's Awash account (same institution)", c.r.status === 200 && (await row(c.tok)).settlement_method === "BANK" && (await row(c.tok)).rail === "Awash Bank", c.r.data?.error);
+  const d = await go({ payer_app: "CBE Birr", method: "bank" });
+  t("an explicit method still wins (the merchant's own button)", d.r.status === 200 && (await row(d.tok)).settlement_method === "BANK", d.r.data?.error);
+
+  const tok = await mk();
+  t("an unknown app is refused", (await call("POST", `/api/pay/${tok}/initiate`, { body: { phone: "0911223344", payer_app: "Evil Bank" } })).status === 400);
+  t("a script in the app name is refused", (await call("POST", `/api/pay/${tok}/initiate`, { body: { phone: "0911223344", payer_app: "<script>alert(1)</script>" } })).status === 400);
+  t("neither a method nor an app is refused", (await call("POST", `/api/pay/${tok}/initiate`, { body: { phone: "0911223344" } })).status === 400);
+  t("no app link is invented when none is configured", a.r.data?.appLink === undefined);
+  t("the sale's receiving account is never taken from the customer", !JSON.stringify(a.r.data).includes("1000123456789"));
+}
+
+section("waiters work in the Android app");
+{
+  await fetch(MOCK + "/__reset_limits");
+  const w = await call("POST", `/api/merchants/${A}/staff`, { ck: ownerA, body: { name: "Tigist", phone: "0911000074", role: "WAITER" } });
+  t("the invitation also carries the in-app link", /^twopay:\/\/activate\/[A-Za-z0-9_-]{43}$/.test(w.data.app_link ?? "") && w.data.app_link.endsWith(w.data.invite_link.split("/join/")[1]));
+  const tk = w.data.invite_link.split("/join/")[1];
+  const n0 = smsTo("+251911000074").length;
+  const s0 = sms.length;
+  const browser = await call("POST", "/api/auth/otp/request", { body: { invite_token: tk }, headers: { "user-agent": BROWSER_UA } });
+  t("a web browser cannot activate a waiter", browser.status === 403 && browser.data.code === "APP_REQUIRED", JSON.stringify(browser.data));
+  await wait(200);
+  t("...and no SMS is spent on it", smsTo("+251911000074").length === n0 && sms.length === s0);
+  const app = await call("POST", "/api/auth/otp/request", { body: { invite_token: tk } });
+  t("the Android app can", app.status === 200);
+  await wait(300);
+  const code = smsTo("+251911000074").at(-1)?.message.match(/(\d{6})/)?.[1];
+  const badV = await call("POST", "/api/auth/otp/verify", { body: { challenge_id: app.data.challenge_id, code, invite_token: tk, device_id: "waiter-install-aaaaaaaaaa" }, headers: { "user-agent": BROWSER_UA } });
+  t("verifying from a browser is refused too", badV.status === 403, JSON.stringify(badV.data));
+  t("the waiter stays unlinked until the app itself confirms", (await db()).merchant_staff.find((s) => s.phone === "+251911000074")?.device_id_hash == null);
+  const cashierBrowser = await call("POST", "/api/auth/otp/request", { body: { phone: "0911000073", purpose: "login" }, headers: { "user-agent": BROWSER_UA } });
+  t("a cashier may still use a browser", cashierBrowser.status === 200 || cashierBrowser.status === 429);
+  const ownerBrowser = await call("GET", "/api/auth/me", { ck: ownerA, headers: { "user-agent": BROWSER_UA } });
+  t("the owner may use a browser", ownerBrowser.status === 200 && ownerBrowser.data.role === "OWNER");
+  const wellKnown = await call("GET", "/.well-known/assetlinks.json", { raw: true });
+  t("the app-link file is published so https links open in the app", wellKnown.status === 200 && wellKnown.data.includes("com.twopay.merchant") && /31:A6:AA:1A/.test(wellKnown.data));
 }
 section("refund requests");
 {

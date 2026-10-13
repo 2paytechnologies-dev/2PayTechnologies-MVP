@@ -7,6 +7,9 @@ const KEY = "2pay:device";
 
 export function getDeviceId(): string {
   try {
+    // Inside the Android app the id belongs to the installation itself (it survives clearing browser data).
+    const native = window.TwoPayNative?.deviceId?.();
+    if (native && /^[A-Za-z0-9_-]{16,64}$/.test(native)) return native;
     const have = localStorage.getItem(KEY);
     if (have && /^[A-Za-z0-9_-]{16,64}$/.test(have)) return have;
     const bytes = crypto.getRandomValues(new Uint8Array(24));

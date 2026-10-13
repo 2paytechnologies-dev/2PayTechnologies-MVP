@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useT, type Key } from "@/lib/i18n";
 import { getDeviceId } from "@/lib/device";
+import { fetchSession } from "@/lib/client-session";
 
 interface Invite {
   business_name: string;
@@ -32,6 +33,15 @@ export default function JoinPage({ params }: { params: Promise<{ token: string }
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Waiters tap to pay, which only the Android app can do. Outside the app (and when sign-in is enforced) this page sends
+  // them to the app instead of letting them activate a browser that could never broadcast a tap.
+  const [inApp, setInApp] = useState(true);
+  const [enforced, setEnforced] = useState(false);
+
+  useEffect(() => {
+    setInApp(typeof window !== "undefined" && !!window.TwoPayNative);
+    void fetchSession().then((s) => setEnforced(s.enforced));
+  }, []);
 
   useEffect(() => {
     fetch(`/api/team/invite?token=${encodeURIComponent(token)}`)
@@ -108,7 +118,18 @@ export default function JoinPage({ params }: { params: Promise<{ token: string }
           </div>
           <p className="rounded-xl bg-slate-950 p-3 text-sm text-slate-300">{t("crew.join.what")}</p>
 
-          {!challenge ? (
+          {state.invite.role === "WAITER" && !inApp && enforced ? (
+            <div className="space-y-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
+              <p className="text-sm text-amber-100">{t("crew.join.appOnly")}</p>
+              <a href={`intent://activate/${token}#Intent;scheme=twopay;package=com.twopay.merchant;S.browser_fallback_url=${encodeURIComponent(`${typeof window !== "undefined" ? window.location.origin : ""}/download`)};end`} className="flex h-12 items-center justify-center rounded-xl bg-brand font-bold text-slate-950">
+                {t("crew.join.openApp")}
+              </a>
+              <a href="/download" className="flex h-12 items-center justify-center rounded-xl border border-slate-600 font-semibold">
+                {t("crew.join.getApp")}
+              </a>
+              <p className="text-xs text-slate-400">{t("crew.join.appHelp")}</p>
+            </div>
+          ) : !challenge ? (
             <Button className="w-full" onClick={sendCode} disabled={busy}>
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserCheck className="h-4 w-4" />} {t("crew.join.send")}
             </Button>

@@ -6,7 +6,8 @@ import { QRCodeSVG } from "qrcode.react";
 import { Check, CheckCircle2, Copy, Landmark, Loader2, Nfc, Plus, Printer, Search, Smartphone, Store, Trash2, X } from "lucide-react";
 import { BANKS, MAX_SAVED, POPULAR_BANKS, POPULAR_WALLETS, WALLETS, type SettlementKind } from "@/lib/constants";
 import { maskAccount, normalizeAccount, type MaskedAccount, type SettlementView } from "@/lib/settlement";
-import { activateAccount, addAccount, loadSettlement, removeAccount } from "@/lib/settlement-client";
+import { StepUpRequiredError, activateAccount, addAccount, loadSettlement, removeAccount } from "@/lib/settlement-client";
+import { StepUpDialog } from "@/components/merchant/StepUpDialog";
 import { useT } from "@/lib/i18n";
 import { InstitutionBadge } from "@/components/InstitutionBadge";
 import type { Merchant } from "@/lib/types";
@@ -28,6 +29,8 @@ export function PaymentAccountsTab({ merchant, welcome, onChanged, onOpenTermina
   const [busy, setBusy] = useState<string | null>(null); // which action is in flight
   const [picker, setPicker] = useState<SettlementKind | null>(null);
   const [removing, setRemoving] = useState<{ kind: SettlementKind; account: MaskedAccount } | null>(null);
+  // A change the server will only accept after the owner confirms with a code sent to their registered phone.
+  const [stepUp, setStepUp] = useState<{ key: string; action: () => Promise<SettlementView> } | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -51,6 +54,10 @@ export function PaymentAccountsTab({ merchant, welcome, onChanged, onOpenTermina
       onChanged();
       return null;
     } catch (e) {
+      if (e instanceof StepUpRequiredError) {
+        setStepUp({ key, action }); // ask for the code, then run the same change again
+        return null;
+      }
       const msg = (e as Error).message === "load" || (e as Error).message === "save" ? t("common.errorGeneric") : (e as Error).message;
       setError(msg);
       return msg;
@@ -156,6 +163,18 @@ export function PaymentAccountsTab({ merchant, welcome, onChanged, onOpenTermina
             const err = await apply("add", () => addAccount(merchant.id, view, picker, institution, number, makeActive));
             if (!err) setPicker(null);
             return err;
+          }}
+        />
+      )}
+
+      {stepUp && (
+        <StepUpDialog
+          merchantId={merchant.id}
+          onCancel={() => setStepUp(null)}
+          onVerified={() => {
+            const s = stepUp;
+            setStepUp(null);
+            void apply(s.key, s.action);
           }}
         />
       )}

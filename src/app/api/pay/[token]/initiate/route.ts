@@ -9,6 +9,10 @@ import { clientIp } from "@/lib/audit";
 import { rateLimit } from "@/lib/ratelimit";
 import { saveReceiptContact } from "@/lib/receipts";
 import { cleanTip } from "@/lib/team";
+import { chooseRoute, findPayerApp } from "@/lib/routing-hub";
+import { needsPayload, platformOf, resolveAppLink } from "@/lib/applinks";
+import { buildEthQr } from "@/lib/ethqr";
+import { referenceFor } from "@/lib/format";
 import type { SavedAccount } from "@/lib/settlement";
 
 export const dynamic = "force-dynamic";
@@ -31,30 +35,22 @@ interface Tx {
   routed_wallet: { id: string; institution: string } | null;
   rail_checkout_url: string | null;
   processing_at: string | null;
-  merchants: { business_name: string; saved_banks: SavedAccount[] | null } | { business_name: string; saved_banks: SavedAccount[] | null }[] | null;
+  merchants: MerchantInfo | MerchantInfo[] | null;
+}
+
+interface MerchantInfo {
+  business_name: string;
+  category: string;
+  location: string | null;
+  saved_banks: SavedAccount[] | null;
+  saved_wallets: SavedAccount[] | null;
 }
 
 const fail = (error: string, status: number) => NextResponse.json({ error }, { status });
 
 /**
- * Optional per-institution deep link into the bank or wallet app, from RAIL_APP_LINKS:
- *   {"Telebirr":"<provider-documented link>?pay={url}"}   ({url} is replaced by the encoded checkout URL)
- * No values are built in: each app's real link format must come from that provider. The pay page tries the app link and
- * falls back to the web checkout if the app did not open.
- */
-function appLinkFor(institution: string, checkoutUrl: string): string | undefined {
-  try {
-    const template = (JSON.parse(process.env.RAIL_APP_LINKS ?? "{}") as Record<string, unknown>)[institution];
-    return typeof template === "string" && /^[a-z][a-z0-9+.-]*:/i.test(template) && !/^javascript:/i.test(template)
-      ? template.replace("{url}", encodeURIComponent(checkoutUrl))
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * The payer tapped "Pay via <bank or wallet>".
+ * The payer tapped their own bank or wallet app on the grid (`payer_app`), or one of the merchant's two methods (`method`).
+ * With `payer_app`, the server picks which of the merchant's active accounts receives the payment (see routing-hub.ts).
  *  simulated mode: authorize at once (no money moves).
  *  live mode:      start a payment with the best available rail and return where to send the payer. The sale is marked
  *                  paid only by the rail's verified callback, never by this request.
@@ -63,8 +59,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
   const { token } = await params;
   if (!UUID.test(token)) return fail("Malformed token", 400);
   const body = await req.json().catch(() => ({}));
-  const method = body?.method === "bank" || body?.method === "wallet" ? (body.method as "bank" | "wallet") : null;
-  if (!method) return fail("method must be 'bank' or 'wallet'", 400);
+  let method = body?.method === "bank" || body?.method === "wallet" ? (body.method as "bank" | "wallet") : null;
+  // The customer's own app, picked from the grid. Only a known national bank or wallet is accepted ("other" = not listed).
+  const payerApp = findPayerApp(body?.payer_app);
+  if (body?.payer_app !== undefined && body.payer_app !== "other" && !payerApp) return fail("Unknown bank or wallet app", 400);
+  if (!method && !payerApp) return fail("method must be 'bank' or 'wallet', or choose your app", 400);
   const lang = body?.lang === "am" ? "am" : "en";
 
   let admin;
@@ -99,6 +98,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
       if (t === null) return fail("That tip amount is not valid.", 400);
       simTip = t;
     }
+    if (!method || payerApp) {
+      // Pick the merchant's receiving account for this customer's app, and remember the customer's choice.
+      const { data: routes } = await admin.from("transactions").select("routed_bank, routed_wallet").eq("token", token).maybeSingle();
+      const pick = chooseRoute(payerApp, { bank: routes?.routed_bank?.institution ?? null, wallet: routes?.routed_wallet?.institution ?? null });
+      if (!pick) return fail("The merchant does not accept payments yet", 400);
+      if (!method) method = pick.method;
+      if (payerApp) await admin.from("transactions").update({ payer_app: payerApp.name }).eq("token", token).eq("status", "PENDING");
+    }
     const r = await authorizeSimulated(admin, token, method, payerPhone ? { phone: payerPhone, lang } : undefined, simTip);
     return r.ok ? NextResponse.json({ mode: "simulated", next: receiptUrl, latency_ms: r.tx.latency_ms, rail: r.tx.rail }) : fail(r.error, r.status);
   }
@@ -107,7 +114,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
   const { data, error } = await admin
     .from("transactions")
     .select(
-      "id, token, amount, currency, status, expires_at, merchant_id, routed_bank, routed_wallet, rail_checkout_url, processing_at, merchants(business_name, saved_banks)",
+      "id, token, amount, currency, status, expires_at, merchant_id, routed_bank, routed_wallet, rail_checkout_url, processing_at, merchants(business_name, category, location, saved_banks, saved_wallets)",
     )
     .eq("token", token)
     .maybeSingle();
@@ -132,6 +139,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
   if (tip === null) return fail("That tip amount is not valid.", 400);
   const charge = Math.round((bill + tip) * 100) / 100; // what the provider collects: the receipt plus the tip
 
+  if (!method) {
+    const pick = chooseRoute(payerApp, { bank: tx.routed_bank?.institution ?? null, wallet: tx.routed_wallet?.institution ?? null });
+    if (!pick) return fail("The merchant does not accept payments yet", 400);
+    method = pick.method;
+  }
   const routed = method === "bank" ? tx.routed_bank : tx.routed_wallet;
   if (!routed) return fail("The merchant does not accept that payment method", 400);
 
@@ -217,6 +229,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
       processing_at: new Date().toISOString(),
       // The provider was asked for the receipt plus the tip, so that is what the watchdog expects back.
       ...(tip > 0 ? { tip_amount: tip, expected_amount: charge } : {}),
+      ...(payerApp ? { payer_app: payerApp.name } : {}),
     })
     .eq("id", tx.id)
     .eq("status", "PENDING")
@@ -233,5 +246,15 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
   }
 
   if (payerPhone) await saveReceiptContact(admin, tx.id, payerPhone, lang);
-  return NextResponse.json({ mode: "redirect", url: session.checkoutUrl, appLink: appLinkFor(routed.institution, session.checkoutUrl) });
+  // Open the CUSTOMER's app if the operator configured a link for it (RAIL_APP_LINKS), pre-filled with the ETHQR payload
+  // when the template wants one. Never required: without a link, or if the app does not open, the web checkout carries on.
+  const appName = payerApp?.name ?? routed.institution;
+  const rawLinks = process.env.RAIL_APP_LINKS;
+  let payload: string | null = null;
+  if (needsPayload(rawLinks, appName)) {
+    const acct = (method === "bank" ? merchant?.saved_banks : merchant?.saved_wallets)?.find((a) => a.id === routed.id);
+    if (acct) payload = buildEthQr({ merchantName: merchant?.business_name ?? "2Pay merchant", category: merchant?.category ?? "Retail", city: merchant?.location, account: { institution: acct.institution, account_number: acct.account_number }, amount: charge, reference: referenceFor(tx.id) });
+  }
+  const appLink = resolveAppLink(rawLinks, appName, platformOf(req.headers.get("user-agent")), { url: session.checkoutUrl, payload, amount: charge.toFixed(2), ref: referenceFor(tx.id) });
+  return NextResponse.json({ mode: "redirect", url: session.checkoutUrl, appLink });
 }

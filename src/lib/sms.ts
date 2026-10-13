@@ -26,3 +26,11 @@ export async function sendSms(phone: string, message: string): Promise<boolean> 
 }
 
 export const sendOtpSms = (phone: string, code: string) => sendSms(phone, `Your 2Pay verification code is ${code}. It expires in 5 minutes.`);
+
+/** The code that unlocks changing where a business receives money. The wording says what it is for, so it is not given away. */
+export const sendStepUpSms = (phone: string, code: string) =>
+  sendSms(phone, `2Pay code ${code}: to confirm changing where your business receives money. Do not share it. If you did not ask for this, ignore this message. Expires in 5 minutes.\n2Pay ኮድ ${code}፦ ገንዘብ የሚቀበሉበትን ሂሳብ ለመቀየር። ለማንም አይስጡ። ያልጠየቁ ከሆነ ይህን መልእክት ችላ ይበሉ።`);
+
+/** Told to the owner after any change to the receiving accounts, so a change they did not make is noticed at once. */
+export const sendSettlementChangedSms = (phone: string, business: string) =>
+  sendSms(phone, `2Pay: the account where ${business} receives money was just changed. If this was not you, contact 2Pay support now.\n2Pay፦ ${business} ገንዘብ የሚቀበልበት ሂሳብ አሁን ተቀይሯል። እርስዎ ካልሆኑ አሁኑኑ 2Pay ድጋፍን ያነጋግሩ።`);

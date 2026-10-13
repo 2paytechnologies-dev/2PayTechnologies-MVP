@@ -9,6 +9,7 @@ import { RailBadge } from "@/components/RailBadge";
 import { InstitutionBadge } from "@/components/InstitutionBadge";
 import { LanguageMenu } from "@/components/LanguageMenu";
 import { fmt } from "@/lib/format";
+import { ALL_PAYER_APPS, POPULAR_PAYER_APPS, type PayerApp } from "@/lib/routing-hub";
 import { useI18n, type Key } from "@/lib/i18n";
 import { localizeError } from "@/lib/i18n/errors";
 
@@ -21,6 +22,7 @@ type State =
 // What the device remembers about the payer, so returning payers pay in one tap. Stored only on their own phone.
 const PHONE_KEY = "2pay:payer-phone";
 const METHOD_KEY = "2pay:last-method";
+const APP_KEY = "2pay:last-app";
 
 const REASONS = { NOT_FOUND: "pay.reason.NOT_FOUND", MALFORMED: "pay.reason.MALFORMED", EXPIRED: "pay.reason.EXPIRED", USED: "pay.reason.USED" } as const satisfies Record<string, Key>;
 
@@ -37,12 +39,15 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
   const router = useRouter();
   const { t, lang } = useI18n();
   const [state, setState] = useState<State>({ kind: "loading" });
-  const [busy, setBusy] = useState<SettlementKind | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [secondsLeft, setSecondsLeft] = useState(0);
   const [phone, setPhone] = useState("");
   const [editingPhone, setEditingPhone] = useState(true);
   const [lastMethod, setLastMethod] = useState<SettlementKind | "">("");
+  const [lastApp, setLastApp] = useState("");
+  const [showMore, setShowMore] = useState(false); // the rest of the national list
+  const [showOther, setShowOther] = useState(false); // "my app is not listed": the merchant's own two methods
   const [banner, setBanner] = useState<"cancelled" | "errored" | null>(null);
   // A tip for the person serving: a percentage of the bill, or any amount the customer types. Zero by default.
   const [tipPct, setTipPct] = useState<0 | 5 | 10 | 15 | "other">(0);
@@ -53,6 +58,7 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
     const saved = remembered(PHONE_KEY);
     setPhone(saved);
     setEditingPhone(!saved); // a remembered number is shown as "Paying as …" with a Change link
+    setLastApp(remembered(APP_KEY));
     const m = remembered(METHOD_KEY);
     if (m === "bank" || m === "wallet") setLastMethod(m);
     const q = new URLSearchParams(window.location.search);
@@ -109,23 +115,26 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
    * Tapping a rail starts the payment. Simulated mode authorizes at once; live mode sends the payer to the rail to
    * approve, and the sale only turns paid when the rail confirms. The server derives the institution from the pay node.
    */
-  const pay = async (method: SettlementKind) => {
+  const pay = async (choice: { method: SettlementKind } | { app: string }) => {
     if (state.kind !== "ready" || busy) return;
     if (!tipValid) return setError(t("crew.pay.tipBad"));
-    setBusy(method);
+    const key = "method" in choice ? choice.method : choice.app;
+    setBusy(key);
     setError(null);
     setBanner(null);
     try {
       try {
         if (phone) localStorage.setItem(PHONE_KEY, phone);
-        localStorage.setItem(METHOD_KEY, method);
+        if ("method" in choice) localStorage.setItem(METHOD_KEY, choice.method);
+        else localStorage.setItem(APP_KEY, choice.app);
       } catch {
         /* storage unavailable: it just won't be remembered */
       }
       const res = await fetch(`/api/pay/${token}/initiate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ method, phone, lang, ...(tipAmount > 0 && !state.resumed ? { tip: tipAmount } : {}) }),
+        // Either the customer's own app (the server picks the merchant's receiving account) or one of the merchant's methods.
+        body: JSON.stringify({ ...("method" in choice ? { method: choice.method } : { payer_app: choice.app }), phone, lang, ...(tipAmount > 0 && !state.resumed ? { tip: tipAmount } : {}) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? t("common.errorGeneric"));
@@ -270,13 +279,55 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
               </label>
             ))}
 
-          {options.length > 0 ? (
+          {options.length > 0 && !state.resumed && (
+            <section className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-4" aria-labelledby="hub-title">
+              <div>
+                <h2 id="hub-title" className="text-base font-bold text-white">{t("hub.title")}</h2>
+                <p className="text-xs text-slate-400">{t("hub.sub")}</p>
+              </div>
+              {(["wallet", "bank"] as const).map((kind) => {
+                const list = (showMore ? ALL_PAYER_APPS : POPULAR_PAYER_APPS).filter((a) => a.kind === kind);
+                return (
+                  <div key={kind} className="space-y-2">
+                    <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t(kind === "wallet" ? "hub.wallets" : "hub.banks")}</h3>
+                    <div className="grid grid-cols-3 gap-2">
+                      {list.map((a: PayerApp) => (
+                        <button
+                          key={a.name}
+                          type="button"
+                          onClick={() => pay({ app: a.name })}
+                          disabled={busy !== null}
+                          aria-label={t("pay.via", { name: a.name })}
+                          className={`relative flex flex-col items-center gap-1.5 rounded-xl border px-1 py-3 text-center transition active:scale-95 disabled:opacity-60 ${lastApp === a.name ? "border-brand bg-brand/10" : "border-slate-700 bg-slate-950/50"}`}
+                        >
+                          {busy === a.name ? <Loader2 className="h-10 w-10 animate-spin" /> : <InstitutionBadge name={a.name} className="h-10 w-10 text-xs" />}
+                          <span className="line-clamp-2 min-h-[2rem] text-[11px] font-medium leading-4 text-slate-200">{a.name.replace(/ \([A-Z]+\)$/, "")}</span>
+                          {lastApp === a.name && <span className="absolute -top-1.5 right-1 rounded bg-brand px-1.5 text-[9px] font-bold uppercase text-slate-950">{t("hub.last")}</span>}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+              <div className="flex items-center justify-between text-xs">
+                <button type="button" onClick={() => setShowMore((v) => !v)} className="font-semibold text-brand underline">
+                  {t(showMore ? "hub.less" : "hub.more")}
+                </button>
+                <button type="button" onClick={() => setShowOther((v) => !v)} className="text-slate-400 underline">
+                  {t("hub.other")}
+                </button>
+              </div>
+              {busy && busy !== "bank" && busy !== "wallet" && <p className="text-center text-xs text-slate-400">{t("hub.opening", { name: busy })}</p>}
+            </section>
+          )}
+
+          {options.length > 0 && (state.resumed || showOther) ? (
             <div className="space-y-3">
-              <h2 className="text-center text-sm font-medium text-slate-300">{t("pay.choose")}</h2>
+              <h2 className="text-center text-sm font-medium text-slate-300">{showOther && !state.resumed ? t("hub.otherHelp") : t("pay.choose")}</h2>
               {options.map(({ method, name, hint, Icon, tone }) => (
                 <button
                   key={method}
-                  onClick={() => pay(method)}
+                  onClick={() => pay({ method })}
                   disabled={busy !== null}
                   className={`flex w-full items-center gap-4 rounded-2xl border p-4 text-left transition active:scale-[0.99] disabled:opacity-60 ${tone}`}
                 >
@@ -296,9 +347,9 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
               ))}
               {busy && leaving.current && <p className="text-center text-sm text-slate-400">{t("pay.opening")}</p>}
             </div>
-          ) : (
+          ) : options.length === 0 ? (
             <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-center text-sm text-amber-200">{t("pay.noMethod")}</div>
-          )}
+          ) : null}
 
           {error && <div className="rounded-lg bg-rose-500/15 p-3 text-sm text-rose-300">{error}</div>}
 

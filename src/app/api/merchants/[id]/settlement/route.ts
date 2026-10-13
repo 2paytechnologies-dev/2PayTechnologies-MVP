@@ -1,6 +1,10 @@
 import { NextResponse } from "next/server";
 import { AdminConfigError, getAdminClient } from "@/lib/supabase-admin";
-import { requireMerchant } from "@/lib/guard";
+import { cookies } from "next/headers";
+import { requireMerchant, isAdminPhone } from "@/lib/guard";
+import { authEnforced, sessionSecret } from "@/lib/auth";
+import { sendSettlementChangedSms } from "@/lib/sms";
+import { STEP_UP_COOKIE, classifyChange, verifyStepUp } from "@/lib/settlement-security";
 import { audit } from "@/lib/audit";
 import { buildAccounts, isUuid, pickActive, toMasked, type SavedAccount, type SettlementView } from "@/lib/settlement";
 
@@ -49,7 +53,10 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
 /**
  * Replace a merchant's saved accounts and choose the active ones.
  * SECURITY: this decides where customer money is routed. In test mode (AUTH_ENFORCED unset) anyone with the
- * link can call it; with AUTH_ENFORCED=true only that merchant's own session (or an admin) can.
+ * link can call it; with AUTH_ENFORCED=true only that merchant's own OWNER session (or an admin) can, and removing or
+ * editing an account, or switching the account money goes to, additionally needs a fresh step-up pass: a one-time code
+ * sent only to the owner's registered phone (see /settlement/step-up). The very first setup is free, and adding an
+ * extra account that is not activated changes nothing, so neither asks for a code.
  */
 export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -79,6 +86,17 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     const activeWallet = pickActive("wallet", wallets.accounts, body.active_wallet_id);
     if (!activeWallet.ok) return NextResponse.json({ error: activeWallet.error }, { status: 400 });
 
+    // ---- the vault gate
+    const kind = classifyChange(row, { saved_banks: banks.accounts, saved_wallets: wallets.accounts, active_bank: activeBank.active, active_wallet: activeWallet.active });
+    const session = guard.session;
+    if (kind === "SENSITIVE" && authEnforced() && session && !isAdminPhone(session.ph)) {
+      const pass = (await cookies()).get(STEP_UP_COOKIE)?.value;
+      if (!verifyStepUp(pass, id, session.ph, sessionSecret() ?? undefined)) {
+        await audit(admin, session, req, { action: "settlement.blocked", targetType: "merchant", targetId: id, merchantId: id, details: { reason: "step-up required" } });
+        return NextResponse.json({ error: "To change where your business receives money, confirm with the code we send to your registered phone.", code: "STEP_UP_REQUIRED" }, { status: 403 });
+      }
+    }
+
     const { data: saved, error } = await admin
       .from("merchants")
       .update({
@@ -99,8 +117,13 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
       targetType: "merchant",
       targetId: id,
       merchantId: id,
-      details: { banks: banks.accounts.length, wallets: wallets.accounts.length, active_bank: activeBank.active?.institution ?? null, active_wallet: activeWallet.active?.institution ?? null },
+      details: { change: kind, banks: banks.accounts.length, wallets: wallets.accounts.length, active_bank: activeBank.active?.institution ?? null, active_wallet: activeWallet.active?.institution ?? null },
     });
+    // A change to where money goes is told to the owner at once, so one they did not make is noticed straight away.
+    if (kind === "SENSITIVE") {
+      const { data: m } = await admin.from("merchants").select("phone, business_name").eq("id", id).maybeSingle();
+      if (m?.phone) await sendSettlementChangedSms(m.phone, m.business_name ?? "your business").catch(() => false);
+    }
     return NextResponse.json(view(saved as Row));
   } catch (e) {
     if (e instanceof AdminConfigError) return configError();

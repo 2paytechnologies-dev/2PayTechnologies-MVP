@@ -5,6 +5,7 @@ import { isUuid } from "@/lib/settlement";
 import { findAccountByPhone } from "@/lib/accounts";
 import { audit } from "@/lib/audit";
 import { hashDevice, hashToken, looksLikeDeviceId, looksLikeInviteToken } from "@/lib/team";
+import { APP_REQUIRED_MESSAGE, appRequiredFor } from "@/lib/node-app";
 
 export const dynamic = "force-dynamic";
 
@@ -82,6 +83,7 @@ export async function POST(req: Request) {
       merchant = { id: account.merchantId, business_name: account.businessName, terminal_id: account.terminalId };
       role = account.role;
       staffId = account.staffId;
+      if (appRequiredFor(account.role, req)) return bad(APP_REQUIRED_MESSAGE, 403);
 
       // Team members are tied to the phone they activated on. The activation link (plus the code sent to the invited
       // number) binds the phone; after that, a different phone is refused until the owner issues a new link.

@@ -7,6 +7,7 @@ import { findAccountByPhone } from "@/lib/accounts";
 import { clientIp } from "@/lib/audit";
 import { rateLimit } from "@/lib/ratelimit";
 import { hashToken, inviteIsLive, looksLikeInviteToken } from "@/lib/team";
+import { APP_REQUIRED_MESSAGE, appRequiredFor } from "@/lib/node-app";
 
 export const dynamic = "force-dynamic";
 
@@ -45,7 +46,7 @@ export async function POST(req: Request) {
     if (invite !== undefined) {
       const { data: member } = await admin
         .from("merchant_staff")
-        .select("phone, invite_expires_at, activated_at")
+        .select("phone, role, invite_expires_at, activated_at")
         .eq("invite_token_hash", hashToken(invite as string))
         .eq("active", true)
         .maybeSingle();
@@ -53,6 +54,8 @@ export async function POST(req: Request) {
         return NextResponse.json({ error: "This activation link has expired or was already used. Ask your manager for a new one." }, { status: 410 });
       }
       phone = member.phone as string;
+      // A waiter's phone has to tap-to-pay, which only the Android app can do: refuse before an SMS is spent.
+      if (appRequiredFor(member.role as string, req)) return NextResponse.json({ error: APP_REQUIRED_MESSAGE, code: "APP_REQUIRED" }, { status: 403 });
     }
 
     if (!phone) return NextResponse.json({ error: "Enter a valid Ethiopian mobile number, e.g. 0911223344" }, { status: 400 });
@@ -63,6 +66,7 @@ export async function POST(req: Request) {
       console.error("[otp/request] account lookup:", (e as Error).message);
       return NextResponse.json({ error: "Could not start verification. Has the latest SQL in supabase/ been run?" }, { status: 500 });
     }
+    if (purpose === "login" && existing && appRequiredFor(existing.role, req)) return NextResponse.json({ error: APP_REQUIRED_MESSAGE, code: "APP_REQUIRED" }, { status: 403 });
     if (purpose === "register" && existing) return NextResponse.json({ error: "This number is already registered. Sign in instead." }, { status: 409 });
     if (purpose === "login" && !existing) return NextResponse.json({ error: "No account for this number. Register first." }, { status: 404 });
 

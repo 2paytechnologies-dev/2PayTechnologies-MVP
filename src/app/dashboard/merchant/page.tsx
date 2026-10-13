@@ -15,6 +15,7 @@ import { CampaignsTab } from "@/components/merchant/CampaignsTab";
 import { TeamTab } from "@/components/merchant/TeamTab";
 import { ProfileTab } from "@/components/merchant/ProfileTab";
 import { defaultMerchantId, fetchSession, type SessionInfo } from "@/lib/client-session";
+import { setNodeMode } from "@/lib/native";
 import { useT, type Key } from "@/lib/i18n";
 import type { Merchant } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -70,6 +71,10 @@ export default function MerchantPortalPage() {
   }, [loadMerchants]);
 
   const role = session?.role ?? "OWNER"; // test mode has no session: everything is open
+  // A waiter's or cashier's phone is a payment terminal and nothing else (a no-op outside the Android app).
+  useEffect(() => {
+    if (session) setNodeMode(role !== "OWNER" && !!session.merchant);
+  }, [session, role]);
   const tabs = useMemo(() => (role !== "OWNER" ? ALL_TABS.filter((x) => x.id === "terminal") : ALL_TABS), [role]); // cashiers and waiters get the terminal only
   const merchant = merchants.find((m) => m.id === merchantId);
   const needsSetup = !!merchant?.routing && !merchant.routing.bank && !merchant.routing.wallet && role === "OWNER";
