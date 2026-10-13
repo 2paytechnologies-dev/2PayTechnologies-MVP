@@ -1,8 +1,8 @@
 {
-    "version":  "2.1.8",
+    "version":  "2.1.9",
     "minVersion":  "2.0.0",
-    "apk":  "/downloads/2pay-merchant-2.1.8.apk",
-    "notes":  "Amharic ተከፍሏል recorded by a native speaker.",
-    "sha256":  "b8b7b64f47bc86397852119fb2f89bd0d9414075e60b998043d5891439902908",
-    "size":  1785389
+    "apk":  "/downloads/2pay-merchant-2.1.9.apk",
+    "notes":  "Cleaner Amharic ተከፍሏል (enhanced recording).",
+    "sha256":  "eea9435ac1fb29541c9a5b8010f93d8b8affce80f34d170017380613721b792a",
+    "size":  1788569
 }

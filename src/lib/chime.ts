@@ -14,7 +14,7 @@ let ctx: AudioContext | null = null;
  * The Amharic "ተከፍሏል" is a recording of a native Amharic speaker (public/sounds/paid-am.mp3), because phones have no Amharic voice to read it.
  * The bytes are fetched when the terminal opens and decoded as soon as the audio context exists.
  */
-const CLIP_URL = "/sounds/paid-am.mp3?v=2";
+const CLIP_URL = "/sounds/paid-am.mp3?v=3";
 let clipBytes: ArrayBuffer | null = null;
 let clipBuffer: AudioBuffer | null = null;
 let clipFetching = false;
