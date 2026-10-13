@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Check, CheckCircle2, Copy, Delete, Loader2, Nfc, QrCode, RefreshCw, RotateCcw, Route, ScanLine, TriangleAlert, Volume2 } from "lucide-react";
 import { isPaid, type Transaction } from "@/lib/types";
 import { primeAudio, keepAudioAlive, playSettlementChime, preloadAnnouncement } from "@/lib/chime";
+import { ShiftLedger } from "@/components/merchant/ShiftLedger";
 import { clearPayLink, keepScreenAwake, nativeInfo, presentPayLink, type NativeInfo } from "@/lib/native";
 import { eatDateKey, eatDayStartISO, fmt } from "@/lib/format";
 import { useI18n, useT, type Key } from "@/lib/i18n";
@@ -38,6 +39,10 @@ interface Props {
   onActiveChange?: (active: boolean) => void;
   /** Called when the cashier taps the "no payment account yet" notice (owner only). */
   onNeedSetup?: () => void;
+  /** Who is using this terminal. Team members see the shift ledger; a waiter sees only their own sales and tips. */
+  role?: "OWNER" | "CASHIER" | "WAITER";
+  /** The signed-in team member, shown at the top so a shared phone always says whose shift it is. */
+  staff?: { name: string; team_no: string | null } | null;
 }
 
 const msLeft = (iso: string) => new Date(iso).getTime() - Date.now();
@@ -52,7 +57,7 @@ const msLeft = (iso: string) => new Date(iso).getTime() - Date.now();
  *    tap payload follows the QR, so a tap and a scan always carry the same, current link.
  * Payments that arrive without a cashier sale (customers scanning the printed shop QR) appear in the live feed.
  */
-export function TerminalPanel({ merchantId, merchantName, category, routing, onActiveChange, onNeedSetup }: Props) {
+export function TerminalPanel({ merchantId, merchantName, category, routing, onActiveChange, onNeedSetup, role = "OWNER", staff = null }: Props) {
   const t = useT();
   const [amount, setAmount] = useState("");
   const [tx, setTx] = useState<Transaction | null>(null); // the node whose QR is on screen
@@ -395,8 +400,11 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
         <h1 className="text-5xl font-extrabold">{t("terminal.done.title")}</h1>
         <p className="mt-2 text-3xl font-bold">ተከፍሏል</p>
         <p className="mt-4 text-6xl font-black">
-          {fmt(Number(done.amount))} {done.currency === "ETB" ? etb : done.currency}
+          {fmt(Number(done.amount) + Number(done.tip_amount ?? 0))} {done.currency === "ETB" ? etb : done.currency}
         </p>
+        {Number(done.tip_amount ?? 0) > 0 && (
+          <p className="mt-2 rounded-full bg-white/20 px-4 py-1.5 text-xl font-semibold">{t("crew.done.split", { revenue: fmt(Number(done.amount)), tip: fmt(Number(done.tip_amount)) })}</p>
+        )}
         <p className="mt-6 text-2xl font-semibold">
           {done.latency_ms != null ? t("terminal.done.authorized", { s: (done.latency_ms / 1000).toFixed(1), rail: done.rail }) : t("terminal.done.paidVia", { rail: done.rail })}
         </p>
@@ -414,7 +422,13 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
         <div className="fixed inset-x-4 top-4 z-40 mx-auto flex max-w-md items-center gap-3 rounded-2xl bg-emerald-500 p-4 text-white shadow-2xl" role="status">
           <CheckCircle2 className="h-8 w-8 shrink-0" />
           <div>
-            <div className="font-bold">{t("terminal.recent.toast", { amount: fmt(Number(toast.amount)), currency: toast.currency === "ETB" ? etb : toast.currency })}</div>
+            <div className="font-bold">
+              {toast.staff_name
+                ? Number(toast.tip_amount ?? 0) > 0
+                  ? t("crew.toast.tip", { name: toast.staff_name, amount: fmt(Number(toast.amount) + Number(toast.tip_amount)), currency: toast.currency === "ETB" ? etb : toast.currency, tip: fmt(Number(toast.tip_amount)) })
+                  : t("crew.toast.by", { name: toast.staff_name, amount: fmt(Number(toast.amount)), currency: toast.currency === "ETB" ? etb : toast.currency })
+                : t("terminal.recent.toast", { amount: fmt(Number(toast.amount) + Number(toast.tip_amount ?? 0)), currency: toast.currency === "ETB" ? etb : toast.currency })}
+            </div>
             <div className="text-sm text-emerald-50">
               {t("terminal.recent.via", { rail: toast.rail })}
               {toast.source === "STATIC_QR" ? ` · ${t("terminal.recent.qr")}` : ""}
@@ -424,6 +438,13 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
       )}
 
       {error && <div className="rounded-lg bg-rose-500/15 p-3 text-sm text-rose-300">{error}</div>}
+
+      {staff && !tx && (
+        <div className="flex items-center justify-between rounded-xl bg-slate-900 px-3 py-2 text-sm">
+          <span className="font-semibold">{t("crew.signedInAs", { name: staff.name, no: staff.team_no ?? "—" })}</span>
+          <span className="rounded bg-slate-800 px-2 py-0.5 text-xs uppercase text-slate-300">{t(role === "WAITER" ? "crew.role.WAITER" : "crew.role.CASHIER")}</span>
+        </div>
+      )}
 
       {!tx ? (
         <>
@@ -509,11 +530,13 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
                   <li key={r.id} className="flex items-center justify-between gap-3 py-2 text-sm">
                     <div className="min-w-0">
                       <div className="font-semibold tabular-nums">
-                        {fmt(Number(r.amount))} {r.currency === "ETB" ? etb : r.currency}
+                        {fmt(Number(r.amount) + Number(r.tip_amount ?? 0))} {r.currency === "ETB" ? etb : r.currency}
+                        {Number(r.tip_amount ?? 0) > 0 && <span className="ml-2 rounded-full bg-amber-400/15 px-2 py-0.5 text-xs font-semibold text-amber-300">{t("crew.recent.tip", { tip: fmt(Number(r.tip_amount)) })}</span>}
                       </div>
                       <div className="truncate text-xs text-slate-500">
                         {new Date(r.created_at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Africa/Addis_Ababa" })} · {t("terminal.recent.via", { rail: r.rail })}
                         {r.source === "STATIC_QR" ? ` · ${t("terminal.recent.qr")}` : ""}
+                        {r.staff_name ? ` · ${t("crew.recent.by", { name: r.staff_name })}${r.team_no ? ` (${r.team_no})` : ""}` : ""}
                       </div>
                     </div>
                     <Check className="h-4 w-4 shrink-0 text-emerald-400" />
@@ -522,6 +545,9 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
               </ul>
             )}
           </section>
+
+          {/* Team members see their shift here: a waiter only their own line, a cashier everyone's. */}
+          {role !== "OWNER" && <ShiftLedger merchantId={merchantId} mine={role === "WAITER"} />}
         </>
       ) : (
         <div className="flex flex-col items-center gap-4 rounded-2xl border border-slate-800 bg-slate-900 p-6">

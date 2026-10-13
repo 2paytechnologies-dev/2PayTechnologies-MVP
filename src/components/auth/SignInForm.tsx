@@ -9,6 +9,7 @@ import { LanguageMenu } from "@/components/LanguageMenu";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useT, type Key } from "@/lib/i18n";
+import { getDeviceId } from "@/lib/device";
 import { cn } from "@/lib/utils";
 
 type Mode = "login" | "register";
@@ -79,7 +80,7 @@ export function SignInForm({ testMode, next, initialMode }: Props) {
     setError(null);
     setBusy(true);
     try {
-      const d = await post("/api/auth/otp/verify", { challenge_id: challenge.id, code, business_name: businessName, category, accepted_terms: accepted });
+      const d = await post("/api/auth/otp/verify", { challenge_id: challenge.id, code, business_name: businessName, category, accepted_terms: accepted, device_id: getDeviceId() });
       // A brand-new merchant goes straight to "Get paid" so the next thing they see is how to start receiving money.
       router.replace(d.created ? "/dashboard/merchant?tab=accounts&welcome=1" : next);
       router.refresh();

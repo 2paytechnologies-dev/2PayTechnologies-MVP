@@ -21,7 +21,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ token: str
     const admin = getAdminClient();
     const { data: tx, error } = await admin
       .from("transactions")
-      .select("id, amount, currency, status, rail, created_at, viewed_at, latency_ms, settled_at, merchants(business_name, category, terminal_id, location)")
+      .select("id, amount, tip_amount, staff_id, currency, status, rail, created_at, viewed_at, latency_ms, settled_at, merchants(business_name, category, terminal_id, location)")
       .eq("token", token)
       .maybeSingle();
     if (error) {
@@ -65,9 +65,19 @@ export async function GET(_: Request, { params }: { params: Promise<{ token: str
       tx.viewed_at && tx.latency_ms != null ? new Date(new Date(tx.viewed_at).getTime() + tx.latency_ms).toISOString() : null;
     const paidAt = tx.settled_at ?? authorizedAt ?? tx.created_at;
 
+    let servedBy: { name: string; team_no: string | null } | null = null;
+    if (tx.staff_id) {
+      const { data: s } = await admin.from("merchant_staff").select("name, team_no").eq("id", tx.staff_id).maybeSingle();
+      if (s) servedBy = { name: s.name as string, team_no: (s.team_no as string | null) ?? null };
+    }
+    const tip = Math.round(Number(tx.tip_amount ?? 0) * 100) / 100;
+
     const view: ReceiptView = {
       reference: referenceFor(tx.id),
       amount: Number(tx.amount),
+      tip,
+      total: Math.round((Number(tx.amount) + tip) * 100) / 100,
+      served_by: servedBy,
       currency: tx.currency,
       status: tx.status,
       rail: tx.rail,

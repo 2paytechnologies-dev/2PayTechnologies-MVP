@@ -4,6 +4,7 @@ import { OTP_MAX_ATTEMPTS, attachSession, codeMatches, hashCode, sessionSecret }
 import { isUuid } from "@/lib/settlement";
 import { findAccountByPhone } from "@/lib/accounts";
 import { audit } from "@/lib/audit";
+import { hashDevice, hashToken, looksLikeDeviceId, looksLikeInviteToken } from "@/lib/team";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +17,8 @@ export async function POST(req: Request) {
   const challengeId = body?.challenge_id;
   const code = typeof body?.code === "string" ? body.code.trim() : "";
   if (!isUuid(challengeId) || !/^\d{6}$/.test(code)) return bad("Enter the 6-digit code");
+  // Activating a phone needs its device id; say so BEFORE the one-time code is spent.
+  if (body?.invite_token !== undefined && !looksLikeDeviceId(body?.device_id)) return bad("This phone could not be identified. Open the link in the 2Pay app or your browser and try again.");
 
   const secret = sessionSecret();
   if (!secret) return bad("SESSION_SECRET (32+ characters) is not configured", 500);
@@ -54,7 +57,8 @@ export async function POST(req: Request) {
     if (!consumed) return bad("This code has already been used.");
 
     let merchant: { id: string; business_name: string; terminal_id: string } | null = null;
-    let role: "OWNER" | "CASHIER" = "OWNER";
+    let role: "OWNER" | "CASHIER" | "WAITER" = "OWNER";
+    let staffId: string | undefined;
 
     if (ch.purpose === "register") {
       for (let attempt = 0; attempt < 8 && !merchant; attempt++) {
@@ -77,11 +81,41 @@ export async function POST(req: Request) {
       if (!account) return bad("No account for this number. Register first.", 404);
       merchant = { id: account.merchantId, business_name: account.businessName, terminal_id: account.terminalId };
       role = account.role;
+      staffId = account.staffId;
+
+      // Team members are tied to the phone they activated on. The activation link (plus the code sent to the invited
+      // number) binds the phone; after that, a different phone is refused until the owner issues a new link.
+      if (staffId) {
+        const deviceId = looksLikeDeviceId(body.device_id) ? body.device_id : null;
+        const invite = looksLikeInviteToken(body.invite_token) ? body.invite_token : null;
+        const now = new Date().toISOString();
+        if (invite) {
+          const { data: m } = await admin
+            .from("merchant_staff")
+            .select("id, invite_expires_at")
+            .eq("id", staffId)
+            .eq("invite_token_hash", hashToken(invite))
+            .maybeSingle();
+          if (!m || new Date(m.invite_expires_at ?? 0).getTime() <= Date.now()) return bad("This activation link has expired or was already used. Ask your manager for a new one.", 410);
+          if (!deviceId) return bad("This phone could not be identified. Open the link in the 2Pay app or your browser and try again.");
+          await admin
+            .from("merchant_staff")
+            .update({ activated_at: now, device_id_hash: hashDevice(deviceId), device_label: /android/i.test(req.headers.get("user-agent") ?? "") ? "Android" : /iphone|ipad/i.test(req.headers.get("user-agent") ?? "") ? "iPhone" : "Browser", invite_token_hash: null, invite_expires_at: null, last_seen_at: now })
+            .eq("id", staffId);
+        } else if (account.deviceHash) {
+          if (!deviceId || hashDevice(deviceId) !== account.deviceHash) return bad("This account is linked to another phone. Ask your manager for a new activation link.", 403);
+          await admin.from("merchant_staff").update({ last_seen_at: now }).eq("id", staffId);
+        } else if (deviceId) {
+          // First sign-in of someone added before activation links existed (or whose link was not used): the phone they
+          // sign in on, with a code sent to their own number, becomes their linked phone.
+          await admin.from("merchant_staff").update({ activated_at: now, device_id_hash: hashDevice(deviceId), last_seen_at: now }).eq("id", staffId);
+        }
+      }
     }
 
     const res = NextResponse.json({ merchant, role, created: ch.purpose === "register" });
-    await attachSession(res, merchant.id, ch.phone, secret, role);
-    await audit(admin, { mid: merchant.id, ph: ch.phone, rl: role, exp: 0 }, req, { action: ch.purpose === "register" ? "account.register" : "auth.login", targetType: "merchant", targetId: merchant.id });
+    await attachSession(res, merchant.id, ch.phone, secret, role, staffId);
+    await audit(admin, { mid: merchant.id, ph: ch.phone, rl: role, exp: 0 }, req, { action: ch.purpose === "register" ? "account.register" : body.invite_token ? "team.activate" : "auth.login", targetType: staffId ? "staff" : "merchant", targetId: staffId ?? merchant.id });
     return res;
   } catch (e) {
     if (e instanceof AdminConfigError) return bad("Server misconfigured", 500);

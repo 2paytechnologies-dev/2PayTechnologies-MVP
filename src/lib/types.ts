@@ -53,6 +53,12 @@ export interface Transaction {
   settlement_method: SettlementMethod | null;
   /** Where the sale started: the cashier keypad, or a customer scanning the printed shop QR. */
   source?: "TERMINAL" | "STATIC_QR";
+  /** The team member who keyed the sale (null = owner / counter) and the extra the customer paid on top of the receipt. */
+  staff_id?: string | null;
+  tip_amount?: number | null;
+  /** Added by the server for team members' screens. */
+  staff_name?: string | null;
+  team_no?: string | null;
 }
 
 /** Shape returned by the open_transaction() RPC. */
@@ -115,7 +121,12 @@ export interface WatchdogEvent {
 
 export interface ReceiptView {
   reference: string;
+  /** The receipt amount (revenue). */
   amount: number;
+  /** What the customer paid on top, and the total they paid. */
+  tip: number;
+  total: number;
+  served_by: { name: string; team_no: string | null } | null;
   currency: string;
   status: Status;
   rail: Rail;

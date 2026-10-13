@@ -12,7 +12,12 @@ export type SimulatedResult =
  * The institution comes from the transaction's own routing snapshot inside authorize_transaction_v2().
  * Never reachable in live mode: the callers refuse first, and the database function is service-role only after lockdown.
  */
-export async function authorizeSimulated(admin: SupabaseClient, token: string, method: RailMethod, contact?: { phone: string; lang: string }): Promise<SimulatedResult> {
+export async function authorizeSimulated(admin: SupabaseClient, token: string, method: RailMethod, contact?: { phone: string; lang: string }, tip = 0): Promise<SimulatedResult> {
+  // A tip chosen on the pay page: record it on the still-pending sale before approving it.
+  if (tip > 0) {
+    const { data: bill } = await admin.from("transactions").select("amount").eq("token", token).eq("status", "PENDING").maybeSingle();
+    if (bill) await admin.from("transactions").update({ tip_amount: tip, expected_amount: Math.round((Number(bill.amount) + tip) * 100) / 100 }).eq("token", token).eq("status", "PENDING");
+  }
   const { data, error } = await admin.rpc("authorize_transaction_v2", { p_token: token, p_method: method });
   if (error) {
     if (error.message.includes("TOKEN_INVALID_OR_EXPIRED")) return { ok: false, status: 410, error: "Token invalid, used or expired" };

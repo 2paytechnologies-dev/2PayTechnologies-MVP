@@ -129,7 +129,7 @@ section("staff accounts");
   t("an invalid phone is rejected", (await call("POST", `/api/merchants/${A}/staff`, { ck: ownerA, body: { name: "Almaz", phone: "123" } })).status === 400);
   t("a cashier cannot add staff", (await call("POST", `/api/merchants/${A}/staff`, { ck: cashierA, body: { name: "X Y", phone: "0911000555" } })).status === 403);
   t("a number that already owns an account is refused", (await call("POST", `/api/merchants/${A}/staff`, { ck: ownerA, body: { name: "Rival", phone: "0911000002" } })).status === 409);
-  const add = await call("POST", `/api/merchants/${A}/staff`, { ck: ownerA, body: { name: "Almaz", phone: phoneCashier } });
+  const add = await call("POST", `/api/merchants/${A}/staff`, { ck: ownerA, body: { name: "Almaz", phone: phoneCashier, role: "CASHIER" } });
   t("the owner adds a cashier (phone is masked in the reply)", add.status === 201 && !JSON.stringify(add.data).includes("0911000099") && add.data.phone_masked?.includes("•••"));
   t("the same number cannot be added twice", (await call("POST", `/api/merchants/${A}/staff`, { ck: ownerA, body: { name: "Again", phone: phoneCashier } })).status === 409);
   const list = await call("GET", `/api/merchants/${A}/staff`, { ck: ownerA });
@@ -223,6 +223,182 @@ section("payer receipts by SMS (live rail sandbox + callbacks)");
   t("the receipt page data is available after settlement", rc.status === 200 && rc.data.status === "SETTLED");
 }
 
+section("team nodes: waiters, activation links, attribution");
+const crew = {};
+{
+  await fetch(MOCK + "/__reset_limits");
+  const addM = (name, phone, role) => call("POST", `/api/merchants/${A}/staff`, { ck: ownerA, body: { name, phone, role } });
+  const w1 = await addM("Abebe", "0911 000 071", "WAITER");
+  const w2 = await addM("Birtukan", "0911000072", "WAITER");
+  const c1 = await addM("Dawit", "0911000073", "CASHIER");
+  t("a waiter is added with a team number", w1.status === 201 && /^W-\d{3}$/.test(w1.data.team_no) && w1.data.role === "WAITER", w1.data.team_no);
+  t("the second waiter gets the next number", w2.status === 201 && w2.data.team_no !== w1.data.team_no && /^W-\d{3}$/.test(w2.data.team_no), w2.data.team_no);
+  t("a cashier is numbered separately", c1.status === 201 && /^C-\d{3}$/.test(c1.data.team_no));
+  t("the activation link is returned once and points at /join", /\/join\/[A-Za-z0-9_-]{43}$/.test(w1.data.invite_link ?? ""));
+  t("the link is also texted to the person (both languages)", smsTo("+251911000071").some((m) => m.message.includes("/join/") && m.message.includes("ተከፍ") === false && /አክሎዎታል/.test(m.message)));
+  t("only the link's hash is stored, never the link", !JSON.stringify((await db()).merchant_staff).includes(w1.data.invite_link.split("/join/")[1]));
+  const token = w1.data.invite_link.split("/join/")[1];
+  crew.w1 = w1.data; crew.w2 = w2.data;
+
+  const look = await call("GET", `/api/team/invite?token=${token}`);
+  t("the join page can see the business, name and team number", look.status === 200 && look.data.valid && look.data.name === "Abebe" && look.data.team_no === w1.data.team_no && !!look.data.business_name);
+  t("the join page learns no phone number", !JSON.stringify(look.data).includes("911000071"));
+  t("a made-up link is not valid", (await call("GET", `/api/team/invite?token=${"A".repeat(43)}`)).status === 410);
+  t("a malformed link is refused", (await call("GET", "/api/team/invite?token=nope")).status === 400);
+
+  const req = await call("POST", "/api/auth/otp/request", { body: { invite_token: token } });
+  await wait(300);
+  const code = smsTo("+251911000071").at(-1)?.message.match(/(\d{6})/)?.[1];
+  t("opening the link sends a code to the invited number", req.status === 200 && !!code, `status ${req.status}`);
+  t("the reply never shows the full number", req.status === 200 && !JSON.stringify(req.data).includes("911000071") && String(req.data.phone).includes("•••"));
+  t("an expired/unknown link cannot request a code", (await call("POST", "/api/auth/otp/request", { body: { invite_token: "B".repeat(43) } })).status === 410);
+
+  const DEV1 = "device-one-aaaaaaaaaaaa", DEV2 = "device-two-bbbbbbbbbbbb";
+  t("activation needs a device id, and the code is not spent by that mistake", (await call("POST", "/api/auth/otp/verify", { body: { challenge_id: req.data.challenge_id, code, invite_token: token } })).status === 400);
+  const ver = await call("POST", "/api/auth/otp/verify", { body: { challenge_id: req.data.challenge_id, code, invite_token: token, device_id: DEV1 } });
+  const set = ver.headers.get("set-cookie") ?? "";
+  const payload = set.includes("2pay_session=") ? JSON.parse(Buffer.from(set.split("2pay_session=")[1].split(".")[0], "base64url").toString()) : {};
+  t("activating gives a WAITER session tied to that team member", ver.status === 200 && payload.rl === "WAITER" && payload.mid === A && payload.sid === w1.data.id && ver.data.role === "WAITER");
+  crew.w1ck = `2pay_session=${set.split("2pay_session=")[1]?.split(";")[0]}`;
+  const row = (await db()).merchant_staff.find((s) => s.id === w1.data.id);
+  t("the phone is linked (hash only) and the link is spent", !!row.activated_at && /^[0-9a-f]{64}$/.test(row.device_id_hash) && !JSON.stringify(row).includes(DEV1) && row.invite_token_hash == null);
+  t("the spent link no longer works", (await call("GET", `/api/team/invite?token=${token}`)).status === 410);
+
+  // signing in later: only from the linked phone
+  const rq = async () => { const r = await call("POST", "/api/auth/otp/request", { body: { phone: "0911000071", purpose: "login" } }); await wait(300); return { r, code: smsTo("+251911000071").at(-1)?.message.match(/(\d{6})/)?.[1] }; };
+  const a = await rq();
+  const other = await call("POST", "/api/auth/otp/verify", { body: { challenge_id: a.r.data.challenge_id, code: a.code, device_id: DEV2 } });
+  t("a different phone is refused with the right code", other.status === 403 && /another phone/i.test(other.data.error ?? ""), other.data.error);
+  const b = await rq();
+  const same = await call("POST", "/api/auth/otp/verify", { body: { challenge_id: b.r.data.challenge_id, code: b.code, device_id: DEV1 } });
+  t("the linked phone can sign in again", same.status === 200 && same.data.role === "WAITER");
+
+  // what a waiter may do
+  const sale = await call("POST", "/api/transactions", { ck: crew.w1ck, body: { merchant_id: A, amount: 100, staff_id: crew.w2.id } });
+  t("a waiter can start a sale", sale.status === 201);
+  const stored = (await db()).transactions.find((x) => x.token === sale.data.token);
+  t("the sale is stamped with the waiter, whatever the request claims", stored.staff_id === crew.w1.id, String(stored.staff_id));
+  crew.saleToken = sale.data.token;
+  for (const [name, method, path, body] of [
+    ["money routing", "GET", `/api/merchants/${A}/settlement`],
+    ["the team list", "GET", `/api/merchants/${A}/staff`],
+    ["adding people", "POST", `/api/merchants/${A}/staff`, { name: "Sneaky", phone: "0911000099", role: "WAITER" }],
+    ["refunds", "GET", `/api/refunds?merchant_id=${A}`],
+    ["the profile", "GET", `/api/merchants/${A}/profile`],
+  ]) t(`a waiter cannot use ${name}`, (await call(method, path, { ck: crew.w1ck, body })).status === 403);
+  t("a waiter cannot read another business", (await call("GET", `/api/transactions?merchant_id=${B}&from=2020-01-01T00:00:00Z&to=2030-01-01T00:00:00Z`, { ck: crew.w1ck })).status === 403);
+}
+
+section("tips: the customer pays more than the receipt");
+{
+  const tokenFor = async (ck, amount) => (await call("POST", "/api/transactions", { ck, body: { merchant_id: A, amount } })).data?.token;
+  const info = await call("GET", `/api/pay/${crew.saleToken}`);
+  t("the customer sees who is serving them", info.status === 200 && info.data.served_by?.name === "Abebe" && info.data.served_by?.team_no === crew.w1.team_no, JSON.stringify(info.data.served_by));
+  const init = (token, body) => call("POST", `/api/pay/${token}/initiate`, { body: { method: "wallet", phone: "0911223344", ...body } });
+  t("a negative tip is refused", (await init(crew.saleToken, { tip: -5 })).status === 400);
+  t("a tip bigger than the bill is refused", (await init(crew.saleToken, { tip: 101 })).status === 400);
+  t("a tip that is not a number is refused", (await init(crew.saleToken, { tip: "lots" })).status === 400);
+
+  // 100 ETB receipt, customer chooses a 50 ETB tip on the pay page: the provider is asked for 150
+  const s1 = await call("POST", "/api/transactions", { ck: crew.w1ck, body: { merchant_id: A, amount: 100 } });
+  let r1;
+  for (let i = 1; i <= 4; i++) { r1 = await init(s1.data.token, { tip: 50 }); if (r1.status < 500) break; await wait(2000 * i); }
+  t("the payment starts for the receipt PLUS the tip", r1.status === 200 && r1.data.url?.startsWith("https://checkout.arifpay.org/"), r1.data?.error ?? r1.data?.url);
+  const t1 = (await db()).transactions.find((x) => x.token === s1.data.token);
+  t("the tip and the expected total are recorded", Number(t1.tip_amount) === 50 && Number(t1.expected_amount) === 150 && Number(t1.amount) === 100, `${t1.tip_amount}/${t1.expected_amount}/${t1.amount}`);
+  const w0 = (await db()).watchdog_events.length;
+  t("the rail confirms 150", (await settle(t1.rail_nonce, 150)).status === 200);
+  const t1s = (await db()).transactions.find((x) => x.id === t1.id);
+  t("settled as 100 revenue + 50 tip, no alarm", t1s.status === "SETTLED" && Number(t1s.tip_amount) === 50 && Number(t1s.settled_amount) === 150 && (await db()).watchdog_events.length === w0);
+
+  // the waiter keys 100, the customer pays 130 straight at the provider: the extra 30 is a tip, not an error
+  const s2 = await call("POST", "/api/transactions", { ck: crew.w1ck, body: { merchant_id: A, amount: 100 } });
+  for (let i = 1; i <= 4; i++) { const r = await init(s2.data.token, {}); if (r.status < 500) break; await wait(2000 * i); }
+  const t2 = (await db()).transactions.find((x) => x.token === s2.data.token);
+  t("a payment without a tip is quoted at the receipt", Number(t2.expected_amount) === 100 && Number(t2.tip_amount ?? 0) === 0); // the real column defaults to 0; the stand-in database has no defaults
+  await settle(t2.rail_nonce, 130);
+  const t2s = (await db()).transactions.find((x) => x.id === t2.id);
+  t("paying 130 on a 100 receipt records a 30 tip", t2s.status === "SETTLED" && Number(t2s.tip_amount) === 30 && Number(t2s.settled_amount) === 130, `${t2s.status}/${t2s.tip_amount}`);
+  const ev2 = (await db()).watchdog_events.filter((e) => e.transaction_id === t2.id);
+  t("the overpayment is information, not a critical alarm", ev2.length === 1 && ev2[0].severity === "INFO", JSON.stringify(ev2.map((e) => e.severity)));
+
+  // paying LESS than the quote is still an alarm
+  const s3 = await call("POST", "/api/transactions", { ck: crew.w1ck, body: { merchant_id: A, amount: 100 } });
+  for (let i = 1; i <= 4; i++) { const r = await init(s3.data.token, {}); if (r.status < 500) break; await wait(2000 * i); }
+  const t3 = (await db()).transactions.find((x) => x.token === s3.data.token);
+  await settle(t3.rail_nonce, 90);
+  const ev3 = (await db()).watchdog_events.filter((e) => e.transaction_id === t3.id);
+  t("paying less than the quote is a CRITICAL alarm and no tip", ev3.some((e) => e.severity === "CRITICAL") && Number((await db()).transactions.find((x) => x.id === t3.id).tip_amount ?? 0) === 0);
+
+  const rc = await call("GET", `/api/pay/${s1.data.token}/receipt`);
+  t("the receipt shows revenue, tip, total and who served", rc.status === 200 && rc.data.amount === 100 && rc.data.tip === 50 && rc.data.total === 150 && rc.data.served_by?.name === "Abebe", JSON.stringify([rc.data.amount, rc.data.tip, rc.data.total, rc.data.served_by]));
+  await wait(300);
+  t("the SMS receipt shows the total and the tip", smsTo("+251911223344").some((m) => m.message.includes("150.00 ETB") && m.message.includes("includes 50.00 tip")));
+}
+
+section("who sees what: waiter, cashier and owner");
+{
+  const cashierSet = async () => {
+    // sign the cashier Dawit in for real (first sign-in binds his phone)
+    await fetch(MOCK + "/__reset_limits");
+    const r = await call("POST", "/api/auth/otp/request", { body: { phone: "0911000073", purpose: "login" } });
+    await wait(300);
+    const code = smsTo("+251911000073").at(-1)?.message.match(/(\d{6})/)?.[1];
+    const v = await call("POST", "/api/auth/otp/verify", { body: { challenge_id: r.data.challenge_id, code, device_id: "cashier-device-ccccccc" } });
+    return { v, ck: `2pay_session=${(v.headers.get("set-cookie") ?? "").split("2pay_session=")[1]?.split(";")[0]}` };
+  };
+  const cash = await cashierSet();
+  t("a cashier added with a team number signs in as CASHIER", cash.v.status === 200 && cash.v.data.role === "CASHIER");
+  const q = `merchant_id=${A}&from=2020-01-01T00:00:00Z&to=2030-01-01T00:00:00Z`;
+  const day = `merchant_id=${A}&from=${new Date(Date.now() - 86400_000).toISOString()}&to=${new Date(Date.now() + 86400_000).toISOString()}`;
+
+  const wl = await call("GET", `/api/transactions?${q}`, { ck: crew.w1ck });
+  t("a waiter's feed holds only their own sales", wl.status === 200 && wl.data.rows.length > 0 && wl.data.rows.every((r) => r.staff_id === crew.w1.id));
+  const cl = await call("GET", `/api/transactions?${q}`, { ck: cash.ck });
+  t("the cashier's feed shows every waiter's sale, named", cl.status === 200 && cl.data.rows.some((r) => r.staff_name === "Abebe" && r.team_no === crew.w1.team_no));
+  const paidRow = cl.data.rows.find((r) => r.tip_amount && Number(r.tip_amount) === 50);
+  t("each feed row carries the confirmation split (100 + 50 = 150)", paidRow?.confirmation?.receipt_amount === 100 && paidRow?.confirmation?.tip === 50 && paidRow?.confirmation?.total_paid === 150 && paidRow?.confirmation?.staff?.name === "Abebe", JSON.stringify(paidRow?.confirmation));
+
+  // a second waiter's sale, so the ledger has two people
+  const set2 = await (async () => {
+    const tokenReq = crew.w2;
+    const link = (await call("POST", `/api/merchants/${A}/staff/${tokenReq.id}`, { ck: ownerA })).data.invite_link;
+    const tk = link.split("/join/")[1];
+    await fetch(MOCK + "/__reset_limits");
+    const r = await call("POST", "/api/auth/otp/request", { body: { invite_token: tk } });
+    await wait(300);
+    const code = smsTo("+251911000072").at(-1)?.message.match(/(\d{6})/)?.[1];
+    const v = await call("POST", "/api/auth/otp/verify", { body: { challenge_id: r.data.challenge_id, code, invite_token: tk, device_id: "device-two-wwwwwwwwwww" } });
+    return `2pay_session=${(v.headers.get("set-cookie") ?? "").split("2pay_session=")[1]?.split(";")[0]}`;
+  })();
+  crew.w2ck = set2;
+  const sB = await call("POST", "/api/transactions", { ck: crew.w2ck, body: { merchant_id: A, amount: 300 } });
+  await call("POST", `/api/pay/${sB.data.token}/initiate`, { body: { method: "wallet", phone: "0911223344" } });
+  const tB = (await db()).transactions.find((x) => x.token === sB.data.token);
+  await settle(tB.rail_nonce, 320);
+
+  const led = await call("GET", `/api/team/ledger?${day}`, { ck: ownerA });
+  const byName = Object.fromEntries((led.data.lines ?? []).map((l) => [l.name, l]));
+  t("the owner's ledger splits Abebe: 150 sales... revenue and tips", byName.Abebe?.tips === 80 && byName.Abebe?.revenue === 300 && byName.Abebe?.sales === 3, JSON.stringify(byName.Abebe));
+  t("...and Birtukan: 300 revenue + 20 tip", byName.Birtukan?.revenue === 300 && byName.Birtukan?.tips === 20 && byName.Birtukan?.total === 320, JSON.stringify(byName.Birtukan));
+  t("ledger totals add up", led.data.totals?.revenue === led.data.lines.reduce((s, l) => s + l.revenue, 0) && Math.abs(led.data.totals.total - (led.data.totals.revenue + led.data.totals.tips)) < 0.005);
+  const cashLed = await call("GET", `/api/team/ledger?${day}`, { ck: cash.ck });
+  t("the cashier sees every team member's line", cashLed.status === 200 && cashLed.data.lines.length >= 2);
+  const wLed = await call("GET", `/api/team/ledger?${day}`, { ck: crew.w1ck });
+  t("a waiter's ledger is only their own line", wLed.status === 200 && wLed.data.lines.length === 1 && wLed.data.lines[0].name === "Abebe");
+  const wLedB = await call("GET", `/api/team/ledger?merchant_id=${B}&from=${new Date(Date.now() - 86400_000).toISOString()}&to=${new Date(Date.now() + 86400_000).toISOString()}`, { ck: crew.w1ck });
+  t("nobody can read another business's ledger", wLedB.status === 403);
+  t("an anonymous caller gets nothing", (await call("GET", `/api/team/ledger?${day}`)).status === 401);
+
+  // reissue + removal
+  const re = await call("POST", `/api/merchants/${A}/staff/${crew.w1.id}`, { ck: ownerA });
+  t("a new link releases the old phone", re.status === 200 && /\/join\//.test(re.data.invite_link) && (await db()).merchant_staff.find((s) => s.id === crew.w1.id).device_id_hash == null);
+  const rmW = await call("DELETE", `/api/merchants/${A}/staff/${crew.w1.id}`, { ck: ownerA });
+  t("removing a waiter works", rmW.status === 200);
+  t("a removed waiter's session stops creating sales at once", (await call("POST", "/api/transactions", { ck: crew.w1ck, body: { merchant_id: A, amount: 5 } })).status === 403);
+  const afterRm = await call("GET", `/api/team/ledger?${day}`, { ck: ownerA });
+  t("past sales still name a removed waiter", (afterRm.data.lines ?? []).some((l) => l.name === "Abebe" && l.sales === 3));
+}
 section("refund requests");
 {
   const txs = (await db()).transactions.filter((x) => x.status === "SETTLED" && x.merchant_id === A && Number(x.amount) === 25);

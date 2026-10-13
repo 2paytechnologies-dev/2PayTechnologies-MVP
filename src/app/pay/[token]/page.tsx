@@ -14,7 +14,7 @@ import { localizeError } from "@/lib/i18n/errors";
 
 type State =
   | { kind: "loading" }
-  | { kind: "ready"; tx: PayView; mode: "simulated" | "live"; resumed: boolean }
+  | { kind: "ready"; tx: PayView; mode: "simulated" | "live"; resumed: boolean; servedBy: { name: string; team_no: string | null } | null }
   | { kind: "invalid"; reason: Key | string }
   | { kind: "paid"; latency: number | null; tx: PayView };
 
@@ -44,6 +44,9 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
   const [editingPhone, setEditingPhone] = useState(true);
   const [lastMethod, setLastMethod] = useState<SettlementKind | "">("");
   const [banner, setBanner] = useState<"cancelled" | "errored" | null>(null);
+  // A tip for the person serving: a percentage of the bill, or any amount the customer types. Zero by default.
+  const [tipPct, setTipPct] = useState<0 | 5 | 10 | 15 | "other">(0);
+  const [otherTip, setOtherTip] = useState("");
   const leaving = useRef(false);
 
   useEffect(() => {
@@ -59,7 +62,7 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
     fetch(`/api/pay/${token}`)
       .then((r) => r.json())
       .then((d) => {
-        if (d.valid) setState({ kind: "ready", tx: d.tx, mode: d.mode === "live" ? "live" : "simulated", resumed: !!d.resumed });
+        if (d.valid) setState({ kind: "ready", tx: d.tx, mode: d.mode === "live" ? "live" : "simulated", resumed: !!d.resumed, servedBy: d.served_by ?? null });
         else setState({ kind: "invalid", reason: d.reason && d.reason in REASONS ? REASONS[d.reason as keyof typeof REASONS] : (d.error ?? "pay.reason.NOT_FOUND") });
       })
       .catch(() => setState({ kind: "invalid", reason: "common.offline" }));
@@ -95,12 +98,20 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
     }, 1600);
   };
 
+  const billAmount = state.kind === "ready" ? Number(state.tx.amount) : 0;
+  const tipAmount =
+    tipPct === "other"
+      ? Math.round(Number(otherTip || 0) * 100) / 100
+      : Math.round(billAmount * tipPct) / 100; // billAmount * pct / 100, to cents
+  const tipValid = Number.isFinite(tipAmount) && tipAmount >= 0 && tipAmount <= Math.min(billAmount, 50000);
+
   /**
    * Tapping a rail starts the payment. Simulated mode authorizes at once; live mode sends the payer to the rail to
    * approve, and the sale only turns paid when the rail confirms. The server derives the institution from the pay node.
    */
   const pay = async (method: SettlementKind) => {
     if (state.kind !== "ready" || busy) return;
+    if (!tipValid) return setError(t("crew.pay.tipBad"));
     setBusy(method);
     setError(null);
     setBanner(null);
@@ -114,7 +125,7 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
       const res = await fetch(`/api/pay/${token}/initiate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ method, phone, lang }),
+        body: JSON.stringify({ method, phone, lang, ...(tipAmount > 0 && !state.resumed ? { tip: tipAmount } : {}) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? t("common.errorGeneric"));
@@ -187,6 +198,12 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
               <span className="ml-2 text-xl text-slate-400">{state.tx.currency === "ETB" ? t("common.etb") : state.tx.currency}</span>
             </div>
             <div className="mt-1 text-xs uppercase tracking-wide text-slate-500">{t("pay.locked")}</div>
+            {state.servedBy && (
+              <div className="mt-3 inline-flex items-center rounded-full bg-slate-800 px-3 py-1 text-sm text-slate-200">
+                {t("crew.pay.served", { name: state.servedBy.name })}
+                {state.servedBy.team_no && <span className="ml-2 font-mono text-xs text-slate-400">{state.servedBy.team_no}</span>}
+              </div>
+            )}
             {state.resumed ? (
               <div className="mt-4 text-sm text-sky-300">{t("pay.inProgress")}</div>
             ) : (
@@ -195,6 +212,40 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
               </div>
             )}
           </div>
+
+          {state.servedBy && !state.resumed && (
+            <div className="space-y-2 rounded-2xl border border-slate-800 bg-slate-900 p-4">
+              <h2 className="text-sm font-medium text-slate-300">{t("crew.pay.tipTitle", { name: state.servedBy.name })}</h2>
+              <div className="grid grid-cols-5 gap-2 text-sm font-semibold">
+                {([0, 5, 10, 15, "other"] as const).map((p) => (
+                  <button
+                    key={String(p)}
+                    type="button"
+                    onClick={() => setTipPct(p)}
+                    aria-pressed={tipPct === p}
+                    className={`rounded-xl border px-1 py-2.5 ${tipPct === p ? "border-brand bg-brand/10 text-white" : "border-slate-700 text-slate-300"}`}
+                  >
+                    {p === 0 ? t("crew.pay.noTip") : p === "other" ? t("crew.pay.other") : `${p}%`}
+                  </button>
+                ))}
+              </div>
+              {tipPct === "other" && (
+                <input
+                  value={otherTip}
+                  onChange={(e) => setOtherTip(e.target.value.replace(/[^0-9.]/g, ""))}
+                  inputMode="decimal"
+                  placeholder={t("crew.pay.otherPh")}
+                  className="h-12 w-full rounded-xl border border-slate-700 bg-slate-950 px-4 text-lg text-slate-100 placeholder:text-slate-600 focus:border-brand focus:outline-none"
+                />
+              )}
+              {tipAmount > 0 && tipValid && (
+                <p className="text-center text-sm font-semibold text-brand">
+                  {t("crew.pay.total", { total: fmt(billAmount + tipAmount), currency: state.tx.currency === "ETB" ? t("common.etb") : state.tx.currency, bill: fmt(billAmount), tip: fmt(tipAmount) })}
+                </p>
+              )}
+              {!tipValid && <p className="text-center text-sm text-rose-300">{t("crew.pay.tipBad")}</p>}
+            </div>
+          )}
 
           {showPhoneInput &&
             (!editingPhone && phone ? (

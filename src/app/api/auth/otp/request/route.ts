@@ -6,6 +6,7 @@ import { sendOtpSms, smsConfigured } from "@/lib/sms";
 import { findAccountByPhone } from "@/lib/accounts";
 import { clientIp } from "@/lib/audit";
 import { rateLimit } from "@/lib/ratelimit";
+import { hashToken, inviteIsLive, looksLikeInviteToken } from "@/lib/team";
 
 export const dynamic = "force-dynamic";
 
@@ -16,9 +17,17 @@ export const dynamic = "force-dynamic";
  */
 export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
-  const phone = normalizePhone(body?.phone);
-  const purpose = body?.purpose;
-  if (!phone) return NextResponse.json({ error: "Enter a valid Ethiopian mobile number, e.g. 0911223344" }, { status: 400 });
+  let phone = normalizePhone(body?.phone);
+  let purpose = body?.purpose;
+  // A team member opening their activation link sends the link's token instead of a number; the code goes to the number
+  // the owner invited, so the link alone is never enough to sign in.
+  const invite = body?.invite_token;
+  if (invite !== undefined) {
+    if (!looksLikeInviteToken(invite)) return NextResponse.json({ error: "This activation link is not valid." }, { status: 400 });
+    purpose = "login";
+  } else if (!phone) {
+    return NextResponse.json({ error: "Enter a valid Ethiopian mobile number, e.g. 0911223344" }, { status: 400 });
+  }
   if (purpose !== "register" && purpose !== "login") return NextResponse.json({ error: "purpose must be 'register' or 'login'" }, { status: 400 });
 
   const secret = sessionSecret();
@@ -33,6 +42,20 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "Too many attempts. Try again in a few minutes." }, { status: 429 });
     }
 
+    if (invite !== undefined) {
+      const { data: member } = await admin
+        .from("merchant_staff")
+        .select("phone, invite_expires_at, activated_at")
+        .eq("invite_token_hash", hashToken(invite as string))
+        .eq("active", true)
+        .maybeSingle();
+      if (!member || !inviteIsLive(member.invite_expires_at)) {
+        return NextResponse.json({ error: "This activation link has expired or was already used. Ask your manager for a new one." }, { status: 410 });
+      }
+      phone = member.phone as string;
+    }
+
+    if (!phone) return NextResponse.json({ error: "Enter a valid Ethiopian mobile number, e.g. 0911223344" }, { status: 400 });
     let existing;
     try {
       existing = await findAccountByPhone(admin, phone); // an owner OR a cashier added by an owner
@@ -71,7 +94,8 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       challenge_id: id,
-      phone,
+      // Someone holding only an activation link must not learn the invited person's full number.
+      phone: invite !== undefined ? `${phone.slice(0, 7)}•••${phone.slice(-2)}` : phone,
       expires_in: OTP_TTL_S,
       delivered,
       ...(testMode() ? { dev_code: code } : {}),

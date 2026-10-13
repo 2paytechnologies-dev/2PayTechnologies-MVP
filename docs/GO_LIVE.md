@@ -10,10 +10,11 @@ Work top to bottom. Each section says what turning it on does, so nothing is swi
 4. `supabase/rails_live.sql` : live-payment columns, `PROCESSING` state, raw-callback audit table. Safe before deploying.
 5. `supabase/v2_1.sql` : **V2.1. Run this BEFORE pushing the V2.1 code.** Adds business-details (KYC) columns, shop-QR flag, payer
    contacts (kept apart from the public sales table), staff, refund requests, audit log, rate limiting, error log and routing history.
-6. **Deploy this release**, then `supabase/lockdown_reads.sql`. It removes all browser access to your data with the public key and
+6. `supabase/v2_2.sql` : **V2.2 (team members and tips). Run this BEFORE pushing the V2.2 code.** Adds team numbers, activation links (stored as hashes), phone binding, a waiter id and a tip amount on every sale. `/api/health` reports `"schema":"outdated"` and names this file until it has run.
+7. **Deploy this release**, then `supabase/lockdown_reads.sql`. It removes all browser access to your data with the public key and
    makes "mark a sale paid" server-only. **Do not run it before deploying**: older pages read the database directly and would break.
 
-(`supabase/all_migrations.sql` bundles steps 1-5, without the lockdown.)
+(`supabase/all_migrations.sql` bundles steps 1-6, without the lockdown.)
 
 ## 2. Environment variables (Vercel, then redeploy)
 
@@ -43,6 +44,7 @@ Receipts by SMS and one-time codes both use `SMS_WEBHOOK_URL`. Without it, recei
 - [ ] The custody question is settled with counsel and the National Bank: without beneficiary splitting, collected funds sit in your
       provider merchant account.
 - [ ] SMS gateway delivers a code to a real phone; one merchant registered and signed in with `AUTH_ENFORCED=true`.
+- [ ] **Team nodes:** add a waiter, open the activation link on a second phone, confirm the code, take a sale, pay it with a 10 % tip, and check the cashier's feed names the waiter and shows the tip, the waiter's own ledger shows only theirs, and the owner's Team tab shows revenue and tips per person. Then remove the waiter and confirm their phone can no longer start a sale. See `docs/TEAM_NODE_TIPS.md`.
 - [ ] An admin phone can open `/dashboard/admin`; a normal merchant is redirected away; one merchant cannot read another's
       transactions (`/api/transactions?merchant_id=<other>` returns 403).
 - [ ] With `lockdown_reads.sql` applied, `GET <supabase-url>/rest/v1/transactions` using the public key returns an error, not data.

@@ -52,6 +52,7 @@ export const config = {
     "/terminal",
     "/api/merchants/:path*",
     "/api/transactions/:path*",
+    "/api/team/ledger",
     "/api/ads/campaigns",
     "/api/watchdog",
     "/api/admin/:path*",

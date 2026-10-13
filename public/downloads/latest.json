@@ -1,8 +1,8 @@
 {
-    "version":  "2.1.9",
+    "version":  "2.2.0",
     "minVersion":  "2.0.0",
-    "apk":  "/downloads/2pay-merchant-2.1.9.apk",
-    "notes":  "Cleaner Amharic ተከፍሏል (enhanced recording).",
-    "sha256":  "eea9435ac1fb29541c9a5b8010f93d8b8affce80f34d170017380613721b792a",
-    "size":  1788569
+    "apk":  "/downloads/2pay-merchant-2.2.0.apk",
+    "notes":  "Team members: waiters and cashiers, activation links, tips and shift ledgers.",
+    "sha256":  "a271841c2343f2038878d9325d88f554f7bda41cc671c65151687fb374417a6d",
+    "size":  1788579
 }

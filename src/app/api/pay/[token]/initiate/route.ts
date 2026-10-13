@@ -8,6 +8,7 @@ import { normalizePhone } from "@/lib/auth";
 import { clientIp } from "@/lib/audit";
 import { rateLimit } from "@/lib/ratelimit";
 import { saveReceiptContact } from "@/lib/receipts";
+import { cleanTip } from "@/lib/team";
 import type { SavedAccount } from "@/lib/settlement";
 
 export const dynamic = "force-dynamic";
@@ -87,8 +88,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
 
   const receiptUrl = `/pay/${token}/receipt`;
 
+  // An optional tip: the customer chose to pay more than the receipt. The bill stays the revenue; the extra is the tip.
+  const tipRequested = body?.tip;
+
   if (mode === "simulated") {
-    const r = await authorizeSimulated(admin, token, method, payerPhone ? { phone: payerPhone, lang } : undefined);
+    let simTip = 0;
+    if (tipRequested !== undefined && Number(tipRequested) !== 0) {
+      const { data: bill } = await admin.from("transactions").select("amount").eq("token", token).maybeSingle();
+      const t = bill ? cleanTip(tipRequested, Number(bill.amount)) : null;
+      if (t === null) return fail("That tip amount is not valid.", 400);
+      simTip = t;
+    }
+    const r = await authorizeSimulated(admin, token, method, payerPhone ? { phone: payerPhone, lang } : undefined, simTip);
     return r.ok ? NextResponse.json({ mode: "simulated", next: receiptUrl, latency_ms: r.tx.latency_ms, rail: r.tx.rail }) : fail(r.error, r.status);
   }
 
@@ -115,6 +126,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
   if (tx.status === "PROCESSING" && tx.rail_checkout_url && tx.processing_at && Date.now() - new Date(tx.processing_at).getTime() < SESSION_REUSE_MS) {
     return NextResponse.json({ mode: "redirect", url: tx.rail_checkout_url });
   }
+
+  const bill = Number(tx.amount);
+  const tip = cleanTip(tipRequested, bill);
+  if (tip === null) return fail("That tip amount is not valid.", 400);
+  const charge = Math.round((bill + tip) * 100) / 100; // what the provider collects: the receipt plus the tip
 
   const routed = method === "bank" ? tx.routed_bank : tx.routed_wallet;
   if (!routed) return fail("The merchant does not accept that payment method", 400);
@@ -156,7 +172,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
       session = await adapter.createPayment({
         token,
         transactionId: tx.id,
-        amount: Number(tx.amount),
+        amount: charge,
         currency: tx.currency,
         method,
         institution: routed.institution,
@@ -199,6 +215,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
       rail_nonce: nonce,
       rail_checkout_url: session.checkoutUrl,
       processing_at: new Date().toISOString(),
+      // The provider was asked for the receipt plus the tip, so that is what the watchdog expects back.
+      ...(tip > 0 ? { tip_amount: tip, expected_amount: charge } : {}),
     })
     .eq("id", tx.id)
     .eq("status", "PENDING")

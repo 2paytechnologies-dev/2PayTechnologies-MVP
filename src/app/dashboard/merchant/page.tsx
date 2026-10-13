@@ -70,7 +70,7 @@ export default function MerchantPortalPage() {
   }, [loadMerchants]);
 
   const role = session?.role ?? "OWNER"; // test mode has no session: everything is open
-  const tabs = useMemo(() => (role === "CASHIER" ? ALL_TABS.filter((x) => x.id === "terminal") : ALL_TABS), [role]);
+  const tabs = useMemo(() => (role !== "OWNER" ? ALL_TABS.filter((x) => x.id === "terminal") : ALL_TABS), [role]); // cashiers and waiters get the terminal only
   const merchant = merchants.find((m) => m.id === merchantId);
   const needsSetup = !!merchant?.routing && !merchant.routing.bank && !merchant.routing.wallet && role === "OWNER";
 
@@ -115,7 +115,7 @@ export default function MerchantPortalPage() {
           {session?.merchant ? (
             <button onClick={signOut} className="inline-flex items-center gap-1.5 text-slate-400 hover:text-slate-200" title={t("portal.signedInAs", { name: session.merchant.business_name })}>
               <LogOut className="h-4 w-4" /> {t("common.signOut")}
-              <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase text-slate-300">{t(role === "OWNER" ? "portal.role.OWNER" : "portal.role.CASHIER")}</span>
+              <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase text-slate-300">{t(role === "OWNER" ? "portal.role.OWNER" : role === "WAITER" ? "portal.role.WAITER" : "portal.role.CASHIER")}</span>
             </button>
           ) : (
             <Link href="/signin" className="inline-flex items-center gap-1.5 text-slate-400 hover:text-slate-200">
@@ -177,6 +177,8 @@ export default function MerchantPortalPage() {
               routing={merchant.routing}
               onActiveChange={setSaleActive}
               onNeedSetup={role === "OWNER" ? () => go("accounts") : undefined}
+              role={role}
+              staff={session?.staff ?? null}
             />
           </div>
           {role === "OWNER" && tab === "accounts" && (

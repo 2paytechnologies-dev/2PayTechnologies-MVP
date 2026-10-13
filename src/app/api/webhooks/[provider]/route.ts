@@ -4,6 +4,7 @@ import { getAdapter } from "@/lib/rails";
 import { recordWatchdogEvent } from "@/lib/watchdog";
 import { BANKS, WALLETS } from "@/lib/constants";
 import { sendReceiptSms } from "@/lib/receipts";
+import { splitPayment } from "@/lib/team";
 
 export const dynamic = "force-dynamic";
 
@@ -91,7 +92,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ provide
 
   const { data: tx, error: findErr } = await admin
     .from("transactions")
-    .select("id, merchant_id, status, amount, expected_amount, currency, rail")
+    .select("id, merchant_id, status, amount, expected_amount, tip_amount, currency, rail")
     .eq("rail_nonce", event.nonce)
     .maybeSingle();
   if (findErr) {
@@ -117,6 +118,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ provide
   // ---- SETTLED ----
   const settledAmount = event.amount;
   const paidVia = institutionFor(event.paymentMethod);
+
+  // Tip extraction: the receipt is revenue; whatever the customer paid above what was quoted is added to the tip.
+  // (Paying less than quoted is not a tip; the watchdog below flags it.)
+  const quoted = Number(tx.expected_amount ?? tx.amount);
+  const split = splitPayment(Number(tx.amount), quoted, settledAmount);
+  const overpaid = settledAmount != null && settledAmount - quoted > 0.005 ? Math.round((settledAmount - quoted) * 100) / 100 : 0;
   const { data: settled, error: updErr } = await admin
     .from("transactions")
     .update({
@@ -125,6 +132,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ provide
       ...(settledAmount != null ? { settled_amount: Math.round(settledAmount * 100) / 100 } : {}),
       ...(event.providerRef ? { arifpay_ref: event.providerRef } : {}),
       ...(paidVia ? { rail: paidVia } : {}),
+      ...(overpaid > 0 ? { tip_amount: Math.round((Number(tx.tip_amount ?? 0) + overpaid) * 100) / 100 } : {}),
     })
     .eq("id", tx.id)
     .in("status", ["PENDING", "PROCESSING", "SUCCESS"]) // single-shot even under concurrent retries
@@ -155,6 +163,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ provide
   let detail = "settled";
   if (settledAmount == null) {
     detail = "settled; provider sent no amount to check";
+  } else if (overpaid > 0) {
+    // The customer paid more than quoted. The extra is recorded as a tip (above), which is not an error.
+    detail = `settled; overpayment of ${overpaid} recorded as tip (revenue ${split.revenue})`;
+    await recordWatchdogEvent(admin, {
+      event_type: "SETTLEMENT_MISMATCH",
+      severity: "INFO",
+      risk_score: 5,
+      merchant_id: settled.merchant_id,
+      transaction_id: settled.id,
+      message: `Customer paid ${settledAmount} ${settled.currency} against ${expected} quoted; the extra ${overpaid} was recorded as a tip.`,
+      details: { provider, provider_ref: event.providerRef ?? null, expected_amount: expected, settled_amount: settledAmount, tip_added: overpaid },
+    });
   } else if (Math.abs(settledAmount - expected) > 0.005) {
     detail = `settled with AMOUNT MISMATCH (expected ${expected}, got ${settledAmount})`;
     await recordWatchdogEvent(admin, {

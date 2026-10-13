@@ -49,6 +49,8 @@ const dup = (res, what) => send(res, 409, { code: "23505", message: `duplicate k
 function violates(table, item, existing) {
   if (table === "refund_requests" && ["REQUESTED", "APPROVED"].includes(item.status ?? "REQUESTED") && existing.some((r) => r.transaction_id === item.transaction_id && ["REQUESTED", "APPROVED"].includes(r.status))) return "refund_requests_open_uq";
   if (table === "merchant_staff" && existing.some((r) => r.phone === item.phone && r.active !== false)) return "merchant_staff_phone_uq";
+  if (table === "merchant_staff" && item.team_no && existing.some((r) => r.merchant_id === item.merchant_id && r.team_no === item.team_no)) return "merchant_staff_team_no_uq";
+  if (table === "merchant_staff" && item.invite_token_hash && existing.some((r) => r.invite_token_hash === item.invite_token_hash)) return "merchant_staff_invite_uq";
   if (table === "merchants" && item.phone && existing.some((r) => r.phone === item.phone)) return "merchants_phone_uq";
   if (table === "transactions" && item.rail_nonce && existing.some((r) => r.rail_nonce === item.rail_nonce)) return "transactions_rail_nonce_uq";
   return null;
@@ -57,6 +59,8 @@ function violates(table, item, existing) {
 http.createServer(async (req, res) => {
   const u = new URL(req.url, "http://x");
   if (u.pathname === "/__db") return send(res, 200, db);
+  // Clears only the rate-limit counters (used when a section makes many sign-in requests).
+  if (u.pathname === "/__reset_limits") { counters.clear(); return send(res, 200, { ok: true }); }
   // Clears sales and rate-limit counters between sections; accounts, staff, refunds, OTPs and the audit log are kept.
   if (u.pathname === "/__reset") { for (const t of ["transactions", "rail_events", "payer_contacts", "rail_attempts", "watchdog_events", "ad_impressions", "ad_campaigns"]) db[t] = []; counters.clear(); return send(res, 200, { ok: true }); }
   const m = /^\/rest\/v1\/(\w+)$/.exec(u.pathname);

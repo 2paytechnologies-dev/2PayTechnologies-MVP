@@ -46,15 +46,17 @@ function saveReceiptImage(r: ReceiptView, t: (k: Key) => string, lang: "en" | "a
 
   g.fillStyle = "#0f172a";
   g.font = `800 68px ${font}`;
-  g.fillText(`${fmt(r.amount)} ${r.currency === "ETB" ? t("common.etb") : r.currency}`, W / 2, 330);
+  g.fillText(`${fmt(r.total)} ${r.currency === "ETB" ? t("common.etb") : r.currency}`, W / 2, 330);
 
   g.fillStyle = "#475569";
   g.font = `400 26px ${font}`;
+  if (r.tip > 0) g.fillText(`${fmt(r.amount)} + ${fmt(r.tip)} ${t("crew.receipt.tip")}`, W / 2, 372);
   g.fillText(`${t("receipt.paidTo")} ${r.merchant_name}`, W / 2, 410);
   g.fillText(`${r.terminal_id}${r.location ? ` • ${r.location}` : ""}`, W / 2, 450);
   g.fillText(`${t("receipt.ref")} ${r.reference}`, W / 2, 510);
   g.fillText(formatEAT(r.paid_at, lang), W / 2, 550);
   g.fillText(`${t("receipt.rail")}: ${r.rail}`, W / 2, 590);
+  if (r.served_by) g.fillText(`${t("crew.receipt.servedBy")}: ${r.served_by.name}${r.served_by.team_no ? ` (${r.served_by.team_no})` : ""}`, W / 2, 630);
 
   g.strokeStyle = "#cbd5e1";
   g.setLineDash([10, 8]);
@@ -197,8 +199,13 @@ export default function ReceiptPage({ params }: { params: Promise<{ token: strin
             </div>
 
             <p className="mt-5 text-center text-5xl font-extrabold tabular-nums tracking-tight">
-              {fmt(receipt.amount)} <span className="text-3xl font-bold text-slate-500">{receipt.currency === "ETB" ? t("common.etb") : receipt.currency}</span>
+              {fmt(receipt.total)} <span className="text-3xl font-bold text-slate-500">{receipt.currency === "ETB" ? t("common.etb") : receipt.currency}</span>
             </p>
+            {receipt.tip > 0 && (
+              <p className="mt-1 text-center text-sm font-medium text-slate-600">
+                {fmt(receipt.amount)} + <span className="font-semibold text-amber-700">{fmt(receipt.tip)} {t("crew.receipt.tip")}</span>
+              </p>
+            )}
 
             <div className="mt-5 space-y-1 text-center text-sm text-slate-600">
               <p>
@@ -208,6 +215,12 @@ export default function ReceiptPage({ params }: { params: Promise<{ token: strin
               <p>
                 {t("receipt.ref")} <span className="font-mono font-semibold text-slate-800">{receipt.reference}</span> • {formatEAT(receipt.paid_at, lang)}
               </p>
+              {receipt.served_by && (
+                <p>
+                  {t("crew.receipt.servedBy")} <span className="font-semibold text-slate-800">{receipt.served_by.name}</span>
+                  {receipt.served_by.team_no ? ` • ${receipt.served_by.team_no}` : ""}
+                </p>
+              )}
             </div>
 
             <hr className="my-6 border-t-2 border-dashed border-slate-200" />

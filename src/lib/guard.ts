@@ -7,8 +7,9 @@ import { authEnforced, normalizePhone } from "@/lib/auth";
  * Access control for route handlers.
  * TEST MODE (AUTH_ENFORCED unset): every check passes, so anyone with the link can use everything.
  * ENFORCED: a merchant may only touch their own merchant id, and admin routes need a phone listed in ADMIN_PHONES.
- * Roles: the OWNER (the merchant's own phone) can do everything for that merchant; a CASHIER can run the terminal
- * and see the last 24 hours of sales, and nothing else.
+ * Roles: the OWNER (the merchant's own phone) can do everything for that merchant. A CASHIER runs the terminal and
+ * sees every team member's sales for the last 24 hours. A WAITER runs the terminal and sees only their own sales and
+ * tips. Neither can touch money routing, staff, profile, ads, refunds or exports.
  */
 export type Guard = { ok: true; session: SessionPayload | null } | { ok: false; res: NextResponse };
 
@@ -27,7 +28,10 @@ export const adminPhones = (): string[] =>
 
 export const isAdminPhone = (phone: string | undefined): boolean => !!phone && adminPhones().includes(phone);
 
-export const roleOf = (s: SessionPayload | null): "OWNER" | "CASHIER" => s?.rl ?? "OWNER";
+export type Role = "OWNER" | "CASHIER" | "WAITER";
+export const roleOf = (s: SessionPayload | null): Role => s?.rl ?? "OWNER";
+/** The team member behind this session (CASHIER / WAITER), or null for the owner and for test mode. */
+export const staffIdOf = (s: SessionPayload | null): string | null => (s && s.rl && s.rl !== "OWNER" ? (s.sid ?? null) : null);
 
 export async function requireSession(): Promise<Guard> {
   if (!authEnforced()) return { ok: true, session: await currentSession() };

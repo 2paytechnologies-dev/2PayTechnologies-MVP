@@ -17,12 +17,15 @@ export const NODE_TTL_MS = 90_000;
 /**
  * Create a single-use PENDING pay node for a merchant. The one place that does this, so the cashier terminal and the
  * static shop QR obey the same rules: routing snapshot (masked), node-priced fee, verification gate in live mode.
+ * A sale keyed by a waiter or cashier carries their id, so every payment can be traced to the person who took it.
  */
 export async function createPayNode(
   admin: SupabaseClient,
   merchantId: string,
   amount: number,
   source: "TERMINAL" | "STATIC_QR",
+  /** The team member keying the sale (from their session, never from a request). null = the owner or the counter. */
+  staffId: string | null = null,
 ): Promise<NodeResult> {
   const rounded = Math.round(amount * 100) / 100;
 
@@ -70,6 +73,7 @@ export async function createPayNode(
       routed_bank: bank ? toMasked(bank) : null,
       routed_wallet: wallet ? toMasked(wallet) : null,
       source,
+      ...(staffId ? { staff_id: staffId } : {}),
     })
     .select()
     .single();

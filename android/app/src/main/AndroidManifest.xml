@@ -48,6 +48,8 @@
                 <data android:scheme="https" android:host="${hostName}" android:pathPrefix="/dashboard" />
                 <data android:scheme="https" android:host="${hostName}" android:pathPrefix="/terminal" />
                 <data android:scheme="https" android:host="${hostName}" android:pathPrefix="/signin" />
+                <!-- Team activation links (/join/<token>) open in the app. -->
+                <data android:scheme="https" android:host="${hostName}" android:pathPrefix="/join" />
             </intent-filter>
         </activity>
 

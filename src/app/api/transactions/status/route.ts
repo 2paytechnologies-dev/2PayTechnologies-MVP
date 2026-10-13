@@ -19,7 +19,7 @@ export async function GET(req: Request) {
   try {
     const { data, error } = await getAdminClient()
       .from("transactions")
-      .select("id, token, status, amount, currency, latency_ms, rail, settlement_method, settled_at")
+      .select("id, token, status, amount, tip_amount, currency, latency_ms, rail, settlement_method, settled_at")
       .in("token", tokens);
     if (error) {
       console.error("[transactions/status]", error.message);
