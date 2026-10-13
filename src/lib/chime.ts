@@ -11,10 +11,10 @@ import type { Lang } from "@/lib/i18n/core";
 let ctx: AudioContext | null = null;
 
 /**
- * The Amharic "ተከፍሏል" is a recorded clip (public/sounds/paid-am.mp3), because phones have no Amharic voice to read it.
+ * The Amharic "ተከፍሏል" is a recording of a native Amharic speaker (public/sounds/paid-am.mp3), because phones have no Amharic voice to read it.
  * The bytes are fetched when the terminal opens and decoded as soon as the audio context exists.
  */
-const CLIP_URL = "/sounds/paid-am.mp3?v=1";
+const CLIP_URL = "/sounds/paid-am.mp3?v=2";
 let clipBytes: ArrayBuffer | null = null;
 let clipBuffer: AudioBuffer | null = null;
 let clipFetching = false;

@@ -1,8 +1,8 @@
 {
-    "version":  "2.1.7",
+    "version":  "2.1.8",
     "minVersion":  "2.0.0",
-    "apk":  "/downloads/2pay-merchant-2.1.7.apk",
-    "notes":  "Recorded Amharic ተከፍሏል on the Amharic interface.",
-    "sha256":  "6483ee4f263557224f81ea3fd23fc9e9983ad02fa4f0588c8300db3983de0362",
-    "size":  1785843
+    "apk":  "/downloads/2pay-merchant-2.1.8.apk",
+    "notes":  "Amharic ተከፍሏል recorded by a native speaker.",
+    "sha256":  "b8b7b64f47bc86397852119fb2f89bd0d9414075e60b998043d5891439902908",
+    "size":  1785389
 }
