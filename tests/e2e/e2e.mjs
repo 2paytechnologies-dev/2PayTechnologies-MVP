@@ -580,6 +580,73 @@ section("managers: appointed approvers with their own key and phone");
   t("(the owner tidies up the extra bank)", back.status === 200 || back.status === 403);
 }
 
+section("2Pay support: reset a forgotten or locked security key");
+{
+  await fetch(MOCK + "/__reset_limits");
+  const BPHONE = "+251911000002";
+  const sKeyB = `/api/merchants/${B}/settlement`;
+  const codeFor = async (phone, from) => { await wait(250); return sms.slice(from).filter((m) => m.to === phone).at(-1)?.message.match(/(\d{6})/)?.[1]; };
+  // business B chooses a key, then forgets it and locks itself out
+  let s0 = sms.length;
+  const er = await call("POST", `${sKeyB}/vault/enroll/request`, { ck: ownerB });
+  const ecode = await codeFor(BPHONE, s0);
+  const en = await call("POST", `${sKeyB}/vault/enroll/verify`, { ck: ownerB, body: { challenge_id: er.data?.challenge_id, code: ecode, pin: "615243" } });
+  t("(setup) a business has chosen a key", en.status === 200 && /^scrypt/.test((await db()).merchants.find((m) => m.id === B)?.vault_pin_hash ?? ""));
+  for (let i = 0; i < 5; i++) await call("POST", `${sKeyB}/step-up/request`, { ck: ownerB, body: { pin: "000009" } });
+  t("(setup) five wrong keys lock it", (await call("GET", `${sKeyB}/vault`, { ck: ownerB })).data?.locked_minutes > 0);
+
+  const list = await call("GET", "/api/admin/security-keys", { ck: admin });
+  const rowB = list.data?.find?.((r) => r.kind === "OWNER" && r.id === B);
+  t("an admin sees who has a key and who is locked", list.status === 200 && rowB?.has_key === true && !!rowB?.locked_until, JSON.stringify(rowB));
+  t("the list never contains a key or a hash", !JSON.stringify(list.data).match(/scrypt|615243|vault_pin_hash/));
+  t("the owner of another business cannot list", (await call("GET", "/api/admin/security-keys", { ck: ownerA })).status === 403);
+  t("nor can a cashier", (await call("GET", "/api/admin/security-keys", { ck: cashierA })).status === 403);
+  t("an owner cannot reset their own key (that would defeat the second lock)", (await call("POST", "/api/admin/security-keys", { ck: ownerB, body: { kind: "OWNER", id: B, action: "reset", reason: "I forgot it, please reset" } })).status === 403);
+  const post = (body, ck = admin) => call("POST", "/api/admin/security-keys", { ck, body });
+  t("a reset without a written identity check is refused", (await post({ kind: "OWNER", id: B, action: "reset", reason: "ok" })).status === 400);
+  t("a malformed request is refused", (await post({ kind: "ADMIN", id: B, action: "reset", reason: "called the registered number" })).status === 400 && (await post({ kind: "OWNER", id: "nope", action: "reset", reason: "called the registered number" })).status === 400);
+  t("an unknown business is a 404", (await post({ kind: "OWNER", id: "9f9f9f9f-0000-4000-8000-000000000009", action: "reset", reason: "called the registered number" })).status === 404);
+
+  s0 = sms.length;
+  const reason = "Called the registered number 0911000002 and the owner confirmed the shop details";
+  const reset = await post({ kind: "OWNER", id: B, action: "reset", reason });
+  await wait(300);
+  const afterB = (await db()).merchants.find((m) => m.id === B);
+  t("an admin can reset the owner's key", reset.status === 200 && afterB.vault_pin_hash == null && afterB.vault_failed === 0 && afterB.vault_locked_until == null, JSON.stringify(reset.data));
+  t("the owner is told by SMS", sms.slice(s0).some((m) => m.to === BPHONE && /reset by 2Pay support/i.test(m.message)));
+  t("a second reset has nothing to do", (await post({ kind: "OWNER", id: B, action: "reset", reason })).status === 409);
+  const au = (await db()).audit_log.filter((r) => r.action === "vault.key_reset").at(-1);
+  t("the audit log records who, why and which business", au?.details?.reason === reason && au?.target_id === B && !!au?.actor_phone, JSON.stringify(au));
+  t("the audit entry holds no key", !JSON.stringify(au).match(/615243|scrypt/));
+  // the person must now choose a new key, with a code to their own phone: a reset alone changes nothing about the accounts
+  const gated = await call("PUT", sKeyB, { ck: ownerB, body: { banks: [{ id: "d0d0d0d0-0000-4000-8000-000000000003", institution: "Awash Bank", account_number: "1000987654321" }], wallets: [], active_bank_id: "d0d0d0d0-0000-4000-8000-000000000003", active_wallet_id: null } });
+  t("after a reset, account changes are blocked until a new key is chosen", gated.status === 403 && gated.data?.code === "VAULT_SETUP_REQUIRED");
+  s0 = sms.length;
+  const er2 = await call("POST", `${sKeyB}/vault/enroll/request`, { ck: ownerB });
+  const ecode2 = await codeFor(BPHONE, s0);
+  t("choosing a new key is allowed again, and the code goes to the owner's phone", er2.status === 200 && !!ecode2 && sms.slice(s0).every((m) => m.to === BPHONE));
+  const en2 = await call("POST", `${sKeyB}/vault/enroll/verify`, { ck: ownerB, body: { challenge_id: er2.data.challenge_id, code: ecode2, pin: "902817" } });
+  t("the new key works", en2.status === 200 && /^scrypt/.test((await db()).merchants.find((m) => m.id === B)?.vault_pin_hash ?? ""));
+
+  // a manager: unlock keeps the key, reset removes it and tells both the manager and the owner
+  const MPH = "+251911000076";
+  const mg = await call("POST", `/api/merchants/${B}/staff`, { ck: ownerB, body: { name: "Hana", phone: "0911000076", role: "MANAGER" } });
+  await fetch(MOCK + `/rest/v1/merchant_staff?id=eq.${mg.data?.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vault_pin_hash: "scrypt$16384$x$y", vault_failed: 0, vault_locked_until: new Date(Date.now() + 600000).toISOString() }) });
+  const mrow = (await call("GET", "/api/admin/security-keys", { ck: admin })).data?.find?.((r) => r.kind === "MANAGER" && r.id === mg.data?.id);
+  t("managers are listed with their business", mrow?.has_key === true && !!mrow?.locked_until && mrow?.merchant_id === B && /Hana/.test(mrow?.name ?? ""), JSON.stringify(mrow));
+  const un = await post({ kind: "MANAGER", id: mg.data.id, action: "unlock", reason });
+  const mAfterUnlock = (await db()).merchant_staff.find((x) => x.id === mg.data.id);
+  t("unlock clears the lock but keeps the key", un.status === 200 && !!mAfterUnlock.vault_pin_hash && mAfterUnlock.vault_locked_until == null);
+  t("unlocking something that is not locked is refused", (await post({ kind: "MANAGER", id: mg.data.id, action: "unlock", reason })).status === 409);
+  s0 = sms.length;
+  const mr = await post({ kind: "MANAGER", id: mg.data.id, action: "reset", reason });
+  await wait(300);
+  t("reset removes a manager's key", mr.status === 200 && (await db()).merchant_staff.find((x) => x.id === mg.data.id).vault_pin_hash == null);
+  t("both the manager and the owner are told", sms.slice(s0).some((m) => m.to === MPH && /reset by 2Pay support/i.test(m.message)) && sms.slice(s0).some((m) => m.to === BPHONE && /reset by 2Pay support/i.test(m.message)));
+  t("a reset cannot reach a manager through the owner's id or another kind", (await post({ kind: "OWNER", id: mg.data.id, action: "reset", reason })).status === 404);
+  await call("DELETE", `/api/merchants/${B}/staff/${mg.data.id}`, { ck: ownerB });
+}
+
 section("national ID (Fayda): prove the owner is who they say");
 {
   await fetch(MOCK + "/__reset_limits");

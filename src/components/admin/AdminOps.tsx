@@ -1,14 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { BadgeCheck, ClipboardList, Loader2, RotateCcw, Siren } from "lucide-react";
+import { BadgeCheck, ClipboardList, KeyRound, Loader2, RotateCcw, Siren } from "lucide-react";
 import { fmt, formatEAT } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-type Tab = "refunds" | "kyc" | "audit" | "errors";
+type Tab = "refunds" | "kyc" | "keys" | "audit" | "errors";
 const TABS: { id: Tab; label: string; icon: typeof RotateCcw }[] = [
   { id: "refunds", label: "Refund requests", icon: RotateCcw },
   { id: "kyc", label: "Verification", icon: BadgeCheck },
+  { id: "keys", label: "Security keys", icon: KeyRound },
   { id: "audit", label: "Audit log", icon: ClipboardList },
   { id: "errors", label: "App errors", icon: Siren },
 ];
@@ -28,6 +29,7 @@ export function AdminOps() {
       <div className="p-4">
         {tab === "refunds" && <Refunds />}
         {tab === "kyc" && <Kyc />}
+        {tab === "keys" && <SecurityKeys />}
         {tab === "audit" && <Table url="/api/admin/audit?limit=100" empty="No audit entries yet." cols={["Time (EAT)", "Actor", "Role", "Action", "Target", "IP", "Details"]} row={(r) => [formatEAT(r.created_at), r.actor_phone ?? "—", r.role ?? "—", r.action, `${r.target_type ?? ""} ${String(r.target_id ?? "").slice(0, 8)}`, r.ip ?? "", JSON.stringify(r.details ?? {})]} />}
         {tab === "errors" && <Table url="/api/admin/errors" empty="No errors reported." cols={["Time (EAT)", "Source", "Message", "Page", "Device"]} row={(r) => [formatEAT(r.created_at), r.source, r.message, r.url ?? "", String(r.user_agent ?? "").slice(0, 60)]} />}
       </div>
@@ -172,6 +174,87 @@ function Kyc() {
           <ActionRow id={m.id} base="/api/admin/kyc" onDone={load} actions={[{ label: "Verify", status: "VERIFIED", tone: "bg-emerald-600 text-white" }, { label: "Reject", status: "REJECTED", needsNote: true, tone: "bg-rose-600 text-white" }]} />
         </div>
       ))}
+    </div>
+  );
+}
+
+/**
+ * Forgotten or locked security keys. A reset only removes the key: the person must then choose a new one, which needs a code
+ * sent to their registered phone, so a reset alone never lets anyone change a receiving account. Confirm who is asking FIRST
+ * (call the registered number), then write how you confirmed it: it is kept in the audit log, and the owner is texted.
+ */
+function SecurityKeys() {
+  const { rows, error, load } = useList("/api/admin/security-keys");
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState<string | null>(null);
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  if (!rows) return <Loader2 className="mx-auto h-5 w-5 animate-spin text-slate-500" />;
+
+  const needle = q.trim().toLowerCase();
+  const shown = rows.filter((r) => !needle || [r.business, r.terminal, r.name, r.phone].some((v) => String(v ?? "").toLowerCase().includes(needle)));
+
+  const act = async (r: Row, action: "reset" | "unlock") => {
+    if (reason.trim().length < 10) return setMsg({ ok: false, text: "Write how you confirmed this person's identity (at least 10 characters)." });
+    if (action === "reset" && !window.confirm(`Reset the security key for ${r.name} at ${r.business}? They will need to choose a new key, and the owner will be texted.`)) return;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await fetch("/api/admin/security-keys", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: r.kind, id: r.id, action, reason }) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error ?? "Failed");
+      setMsg({ ok: true, text: action === "reset" ? `Key reset for ${r.name} at ${r.business}. They choose a new one next time they change an account.` : `Unlocked ${r.name} at ${r.business}.` });
+      setOpen(null);
+      setReason("");
+      await load();
+    } catch (e) {
+      setMsg({ ok: false, text: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      {error && <p className="rounded-lg bg-rose-500/15 p-3 text-sm text-rose-300">{error}</p>}
+      {msg && <p className={cn("rounded-lg p-3 text-sm", msg.ok ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300")}>{msg.text}</p>}
+      <p className="text-xs text-slate-500">
+        For a forgotten key or a locked vault. Call the registered number and confirm who is asking before you reset. A reset removes the key only: the person chooses a new one with a code sent to their phone.
+      </p>
+      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search business, terminal, name or phone" className="h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm" />
+      {shown.length === 0 && <p className="py-6 text-center text-sm text-slate-500">No one matches.</p>}
+      {shown.map((r) => {
+        const k = `${r.kind}:${r.id}`;
+        const locked = !!r.locked_until;
+        return (
+          <div key={k} className="rounded-xl border border-slate-800 bg-slate-950 p-3 text-sm">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="space-y-0.5">
+                <div className="font-semibold">{r.business} <span className="text-xs font-normal text-slate-500">{r.terminal}</span></div>
+                <div className="text-slate-300">{r.name} · <span className="font-mono text-xs">{r.phone ?? "no phone"}</span></div>
+                <div className="text-xs">
+                  {locked ? <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-amber-300">Locked until {formatEAT(r.locked_until)}</span> : r.has_key ? <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-emerald-300">Key set</span> : <span className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-400">No key chosen yet</span>}
+                </div>
+              </div>
+              {(r.has_key || locked) && (
+                <button onClick={() => { setOpen(open === k ? null : k); setReason(""); setMsg(null); }} className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-semibold text-white">
+                  {open === k ? "Close" : "Reset or unlock"}
+                </button>
+              )}
+            </div>
+            {open === k && (
+              <div className="mt-3 space-y-2 border-t border-slate-800 pt-3">
+                <input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={300} placeholder="How did you confirm who is asking? (required, kept in the audit log)" className="h-9 w-full rounded-lg border border-slate-700 bg-slate-900 px-2 text-xs" />
+                <div className="flex flex-wrap gap-2">
+                  <button disabled={busy} onClick={() => act(r, "reset")} className="rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">Reset security key</button>
+                  {locked && <button disabled={busy} onClick={() => act(r, "unlock")} className="rounded-lg bg-slate-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">Unlock only (keep the key)</button>}
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

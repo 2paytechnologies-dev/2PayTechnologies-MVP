@@ -29,7 +29,11 @@ and adding an account that becomes active. The first account of a new business, 
 
 **Test mode.** While `AUTH_ENFORCED` is off, the gate still applies (the approver is the owner), so you can see the real behaviour before launch. There is no admin bypass.
 
-**Forgotten key.** Deliberately no self-service reset that skips the owner's phone. Decide who at 2Pay may reset a key after identity checks (listed in `docs/GO_LIVE.md`).
+**Forgotten or locked key (2Pay support).** There is deliberately no self-service reset. In the admin hub, the **Security keys** tab lists every owner and manager (key set / locked / not chosen yet). After you have called the registered number and confirmed who is asking, press **Reset or unlock**, write how you confirmed it (required, kept in the audit log), and choose:
+- **Reset security key:** removes the key. The person must then choose a new one, which needs a code sent to their registered phone, so a reset alone never lets anyone change an account. Unused account-change codes for that phone are cancelled, and both the person and the owner are texted ("reset by 2Pay support").
+- **Unlock only:** clears a 15-minute lock and keeps the key.
+
+Only admins (`ADMIN_PHONES`) can use it; it is rate limited (20 per hour); the list never shows a key or hash. Audit actions: `vault.key_reset`, `vault.unlock`.
 
 **Honest limit.** The code goes to the approver's phone. If a thief holds both the unlocked phone and knows the key, they pass. A biometric prompt in the Android app (`BiometricPrompt`) is the natural third factor.
 

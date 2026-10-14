@@ -13,7 +13,7 @@ export const dynamic = "force-dynamic";
 /**
  * Step one of choosing a security key: send a one-time code to the approver's phone. A business that has no registered
  * phone yet supplies one here (and it is only attached after that phone proves it can receive the code). Only available
- * while no key exists; once a key is set it can only be reset by 2Pay support, so a stolen session cannot swap it.
+ * while no key exists; once a key is set it can only be reset by 2Pay support (the admin hub's Security keys tab), so a stolen session cannot swap it.
  */
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;

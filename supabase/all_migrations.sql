@@ -776,6 +776,25 @@ language sql immutable as $$
                                       'last4', coalesce(acct->>'last4', right(coalesce(acct->>'account_number', ''), 4))) end
 $$;
 
+-- The history trigger, made independent of the column types. Some databases hold the receiving accounts as jsonb[] (an array
+-- of json values) instead of jsonb; the V2.3 trigger then failed with "function settlement_mask_list(jsonb[]) does not exist"
+-- on EVERY change to those columns. to_jsonb() turns either shape into the same json array, so the history works for both.
+create or replace function log_settlement_change() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.saved_banks   is distinct from old.saved_banks
+  or new.saved_wallets is distinct from old.saved_wallets
+  or new.active_bank   is distinct from old.active_bank
+  or new.active_wallet is distinct from old.active_wallet then
+    insert into settlement_change_log (merchant_id, before, after) values (
+      new.id,
+      jsonb_build_object('banks', settlement_mask_list(to_jsonb(old.saved_banks)), 'wallets', settlement_mask_list(to_jsonb(old.saved_wallets)),
+                         'active_bank', settlement_mask(to_jsonb(old.active_bank)), 'active_wallet', settlement_mask(to_jsonb(old.active_wallet))),
+      jsonb_build_object('banks', settlement_mask_list(to_jsonb(new.saved_banks)), 'wallets', settlement_mask_list(to_jsonb(new.saved_wallets)),
+                         'active_bank', settlement_mask(to_jsonb(new.active_bank)), 'active_wallet', settlement_mask(to_jsonb(new.active_wallet))));
+  end if;
+  return new;
+end $$;
 -- Server-only, like every table that holds people or money. Nothing here is readable with the public key.
 -- (Column privileges on `merchants` / `merchant_staff` for the public roles are owned by earlier migrations and
 -- lockdown_reads.sql; they are deliberately not re-granted here.)
