@@ -9,6 +9,7 @@ import { RailBadge } from "@/components/RailBadge";
 import { InstitutionBadge } from "@/components/InstitutionBadge";
 import { LanguageMenu } from "@/components/LanguageMenu";
 import { fmt } from "@/lib/format";
+import { preloadAnnouncement, primeAudio } from "@/lib/chime";
 import { ALL_PAYER_APPS, POPULAR_PAYER_APPS, type PayerApp } from "@/lib/routing-hub";
 import { useI18n, type Key } from "@/lib/i18n";
 import { localizeError } from "@/lib/i18n/errors";
@@ -48,6 +49,7 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
   const [lastApp, setLastApp] = useState("");
   const [showMore, setShowMore] = useState(false); // the rest of the national list
   const [showOther, setShowOther] = useState(false); // "my app is not listed": the merchant's own two methods
+  const [opening, setOpening] = useState<{ app: string; transfer: "internal" | "interbank" | "wallet"; to: string } | null>(null);
   const [banner, setBanner] = useState<"cancelled" | "errored" | null>(null);
   // A tip for the person serving: a percentage of the bill, or any amount the customer types. Zero by default.
   const [tipPct, setTipPct] = useState<0 | 5 | 10 | 15 | "other">(0);
@@ -59,6 +61,7 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
     setPhone(saved);
     setEditingPhone(!saved); // a remembered number is shown as "Paying as …" with a Change link
     setLastApp(remembered(APP_KEY));
+    preloadAnnouncement();
     const m = remembered(METHOD_KEY);
     if (m === "bank" || m === "wallet") setLastMethod(m);
     const q = new URLSearchParams(window.location.search);
@@ -118,6 +121,7 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
   const pay = async (choice: { method: SettlementKind } | { app: string }) => {
     if (state.kind !== "ready" || busy) return;
     if (!tipValid) return setError(t("crew.pay.tipBad"));
+    primeAudio(); // this tap is the browser's permission for sound, so the receipt can chime the moment it appears
     const key = "method" in choice ? choice.method : choice.app;
     setBusy(key);
     setError(null);
@@ -138,7 +142,11 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? t("common.errorGeneric"));
-      if (data.mode === "redirect") return handOver(data.url, data.appLink); // keep the buttons locked while handing over
+      if (data.mode === "redirect") {
+        // Say which screen of their own app is opening (same bank, or "transfer to other banks" with the merchant's bank chosen).
+        if (data.appLink && "app" in choice && data.transfer) setOpening({ app: choice.app, transfer: data.transfer, to: data.to });
+        return handOver(data.url, data.appLink); // keep the buttons locked while handing over
+      }
       setState({ kind: "paid", latency: data.latency_ms ?? null, tx: { ...state.tx, rail: data.rail ?? state.tx.rail } });
       setTimeout(() => router.replace(data.next ?? `/pay/${token}/receipt`), 900); // brief confirmation, then the receipt
     } catch (e) {
@@ -317,7 +325,8 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
                   {t("hub.other")}
                 </button>
               </div>
-              {busy && busy !== "bank" && busy !== "wallet" && <p className="text-center text-xs text-slate-400">{t("hub.opening", { name: busy })}</p>}
+              {opening && <p className="rounded-lg bg-brand/10 p-2 text-center text-xs font-medium text-emerald-200">{t(`hub.open.${opening.transfer}` as Key, { app: opening.app, to: opening.to })}</p>}
+              {busy && busy !== "bank" && busy !== "wallet" && !opening && <p className="text-center text-xs text-slate-400">{t("hub.opening", { name: busy })}</p>}
             </section>
           )}
 

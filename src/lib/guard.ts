@@ -28,7 +28,7 @@ export const adminPhones = (): string[] =>
 
 export const isAdminPhone = (phone: string | undefined): boolean => !!phone && adminPhones().includes(phone);
 
-export type Role = "OWNER" | "CASHIER" | "WAITER";
+export type Role = "OWNER" | "CASHIER" | "WAITER" | "MANAGER";
 export const roleOf = (s: SessionPayload | null): Role => s?.rl ?? "OWNER";
 /** The team member behind this session (CASHIER / WAITER), or null for the owner and for test mode. */
 export const staffIdOf = (s: SessionPayload | null): string | null => (s && s.rl && s.rl !== "OWNER" ? (s.sid ?? null) : null);
@@ -43,13 +43,15 @@ export async function requireSession(): Promise<Guard> {
  * The caller may act on `merchantId`: it is their own (or they are an admin).
  * Pass `{ owner: true }` for anything a cashier must not do (money routing, ads, staff, profile, refunds, exports).
  */
-export async function requireMerchant(merchantId: string, opts: { owner?: boolean } = {}): Promise<Guard> {
+export async function requireMerchant(merchantId: string, opts: { owner?: boolean; vault?: boolean } = {}): Promise<Guard> {
   const g = await requireSession();
   if (!g.ok || !authEnforced()) return g;
   const s = g.session!;
   if (isAdminPhone(s.ph)) return g;
   if (s.mid !== merchantId) return deny(403, "You do not have access to this merchant");
   if (opts.owner && roleOf(s) !== "OWNER") return deny(403, "Only the business owner can do this");
+  // The vault (receiving accounts): the owner, or a manager the owner appointed. Both still need their security key and a code.
+  if (opts.vault && roleOf(s) !== "OWNER" && roleOf(s) !== "MANAGER") return deny(403, "Only the owner or a manager can manage payment accounts");
   return g;
 }
 

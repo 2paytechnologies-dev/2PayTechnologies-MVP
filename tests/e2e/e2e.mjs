@@ -2,6 +2,8 @@
 // call) Arifpay's public SANDBOX. See tests/e2e/README.md for how to run it.
 import http from "node:http";
 import { createHmac } from "node:crypto";
+import fs from "node:fs";
+import { startFakeFayda } from "./fake-fayda.mjs";
 import { signSession } from "../../src/lib/session.ts";
 
 const BASE = process.env.BASE ?? "http://localhost:3170";
@@ -40,6 +42,9 @@ const sms = [];
 http.createServer((req, res) => { let s = ""; req.on("data", (c) => (s += c)); req.on("end", () => { sms.push(JSON.parse(s)); res.writeHead(200); res.end("{}"); }); }).listen(4030);
 const smsTo = (phone) => sms.filter((m) => m.to === phone);
 
+// --- a pretend national ID provider (see fake-fayda.mjs); the app under test is started pointing at it (tests/e2e/README.md)
+const fayda = await startFakeFayda({ port: 4040, clientId: "2pay-e2e", clientPrivateJwk: JSON.parse(fs.readFileSync(new URL("./fayda-client.jwk.json", import.meta.url), "utf8")), person: { sub: "uin-7000123", name: "Abebe Kebede Tesfaye", nameAm: "አበበ ከበደ ተስፋዬ" } });
+
 async function liveSale(merchantCookie, amount, { lang = "en", phone = "0911223344", source = "terminal", terminal = "TRM-0002" } = {}) {
   let token;
   if (source === "static") {
@@ -71,7 +76,11 @@ section("health, headers and public pages");
   t("health reports ok + version and exposes no secret VALUES", h.status === 200 && h.data.ok && h.data.version && ![SESSION_SECRET, WEBHOOK_SECRET, CRON, "service"].some((v) => JSON.stringify(h.data).includes(v)) && Object.values(h.data.auth).every((v) => typeof v === "boolean"), JSON.stringify(h.data).slice(0, 120));
   const p = await call("GET", "/signin", { raw: true });
   t("CSP enforced: framing and plugins are blocked", /frame-ancestors 'none'/.test(p.headers.get("content-security-policy") ?? "") && /object-src 'none'/.test(p.headers.get("content-security-policy") ?? ""));
-  t("strict CSP is being collected in report-only mode", !!p.headers.get("content-security-policy-report-only"));
+  t("CSP enforced: only our own origin for scripts, connections and form posts", /default-src 'self'/.test(p.headers.get("content-security-policy") ?? "") && /connect-src 'self'/.test(p.headers.get("content-security-policy") ?? "") && /form-action 'self'/.test(p.headers.get("content-security-policy") ?? ""));
+  const evil = await call("POST", "/api/auth/logout", { headers: { origin: "https://evil.example" } });
+  const evilFetch = await call("POST", "/api/auth/logout", { headers: { "sec-fetch-site": "cross-site" } });
+  const ours = await call("POST", "/api/auth/logout", { headers: { origin: BASE } });
+  t("a change request from another website is refused; one from our own pages is not", evil.status === 403 && evilFetch.status === 403 && ours.status !== 403, `${evil.status}/${evilFetch.status}/${ours.status}`);
   for (const path of ["/t/TRM-0002", "/poster/TRM-0002", "/terms", "/privacy", "/download", "/signin", "/"]) t(`public page ${path}`, (await call("GET", path, { raw: true })).status === 200);
   t("a protected page redirects an anonymous visitor", [307, 308].includes((await call("GET", "/dashboard/merchant", { raw: true })).status));
 }
@@ -188,8 +197,9 @@ section("scan-to-pay shop QR");
   t("a valid amount creates a pay node tagged STATIC_QR with the shop's routing", good.status === 201 && row?.source === "STATIC_QR" && row.routed_bank?.institution === "Awash Bank");
   await fetch(MOCK + "/__reset");
   let limited = 0;
-  for (let i = 0; i < 14; i++) if ((await call("POST", "/api/public/terminal/TRM-0002/pay", { body: { amount: 10 } })).status === 429) limited++;
-  t("rapid-fire creation is rate limited (10 per minute per payer)", limited >= 3, `${limited} of 14 refused`);
+  // 25 requests, so even if the one-minute window rolls over half way through, each half exceeds the limit of 10
+  for (let i = 0; i < 25; i++) if ((await call("POST", "/api/public/terminal/TRM-0002/pay", { body: { amount: 10 } })).status === 429) limited++;
+  t("rapid-fire creation is rate limited (10 per minute per payer)", limited >= 3, `${limited} of 25 refused`);
   await fetch(MOCK + "/__reset");
 }
 
@@ -401,7 +411,8 @@ section("who sees what: waiter, cashier and owner");
   const afterRm = await call("GET", `/api/team/ledger?${day}`, { ck: ownerA });
   t("past sales still name a removed waiter", (afterRm.data.lines ?? []).some((l) => l.name === "Abebe" && l.sales === 3));
 }
-section("settlement vault: changing where money goes needs the owner's code");
+section("settlement vault: security key + phone code for every add and remove");
+const vaultState = {};
 {
   await fetch(MOCK + "/__reset_limits");
   const OWNER_PHONE = "+251911000001";
@@ -409,59 +420,215 @@ section("settlement vault: changing where money goes needs the owner's code");
   const BANK = { id: "b0b0b0b0-0000-4000-8000-000000000001" }, WALLET = { id: "c0c0c0c0-0000-4000-8000-000000000002" };
   const keepAll = { banks: [BANK], wallets: [WALLET], active_bank_id: BANK.id, active_wallet_id: WALLET.id };
   const removeWallet = { banks: [BANK], wallets: [], active_bank_id: BANK.id, active_wallet_id: null };
+  const extra = { id: "e0e0e0e0-0000-4000-8000-000000000009", institution: "Dashen Bank", account_number: "5555000011112222" };
+  const addExtra = { banks: [BANK, extra], wallets: [WALLET], active_bank_id: BANK.id, active_wallet_id: WALLET.id };
+  const passOf = (r) => (r.headers.get("set-cookie") ?? "").match(/2pay_stepup=([^;]+)/)?.[1];
+  const codeFor = async (phone, from) => { await wait(250); return sms.slice(from).filter((m) => m.to === phone).at(-1)?.message.match(/(\d{6})/)?.[1]; };
 
-  t("an unchanged save needs no code", (await call("PUT", sKey, { ck: ownerA, body: keepAll })).status === 200);
-  const blocked = await call("PUT", sKey, { ck: ownerA, body: removeWallet });
-  t("removing an account is refused until the owner confirms", blocked.status === 403 && blocked.data.code === "STEP_UP_REQUIRED", JSON.stringify(blocked.data));
+  t("an unchanged save needs nothing", (await call("PUT", sKey, { ck: ownerA, body: keepAll })).status === 200);
+
+  // ---- nobody can change anything until the owner has set a security key
+  const noKey = await call("PUT", sKey, { ck: ownerA, body: removeWallet });
+  t("removing an account is refused until a security key exists", noKey.status === 403 && noKey.data.code === "VAULT_SETUP_REQUIRED" && noKey.data.need === "pin", JSON.stringify(noKey.data));
+  t("so is ADDING an account", (await call("PUT", sKey, { ck: ownerA, body: addExtra })).data.code === "VAULT_SETUP_REQUIRED");
   t("...and nothing was changed", (await db()).merchants.find((m) => m.id === A).saved_wallets.length === 1);
-  t("a cashier cannot ask for the code", (await call("POST", `${sKey}/step-up/request`, { ck: cashierA })).status === 403);
-  t("a waiter cannot ask for the code", (await call("POST", `${sKey}/step-up/request`, { ck: crew.w2ck })).status === 403);
+  const st = await call("GET", `${sKey}/vault`, { ck: ownerA });
+  t("the app can ask which step is next (and learns no secret)", st.status === 200 && st.data.approver === "OWNER" && st.data.has_phone === true && st.data.has_pin === false && String(st.data.phone_masked).includes("•••") && !JSON.stringify(st.data).includes("911000001"));
+  t("a cashier cannot ask", (await call("GET", `${sKey}/vault`, { ck: cashierA })).status === 403);
+  t("a waiter cannot ask", (await call("GET", `${sKey}/vault`, { ck: crew.w2ck })).status === 403);
+
+  // ---- choosing the key: a code to the owner's phone, then key + code together
+  let s0 = sms.length;
+  const er = await call("POST", `${sKey}/vault/enroll/request`, { ck: ownerA, body: { phone: "0911999999" } }); // a different number is ignored: the business already has one
+  const ecode = await codeFor(OWNER_PHONE, s0);
+  t("the code goes only to the registered owner phone", er.status === 200 && sms.slice(s0).every((m) => m.to === OWNER_PHONE) && !!ecode, JSON.stringify(sms.slice(s0).map((m) => m.to)));
+  t("the reply shows only a masked number", String(er.data.phone_masked).includes("•••") && !JSON.stringify(er.data).includes("911000001") && !("dev_code" in er.data));
+  const weak = await call("POST", `${sKey}/vault/enroll/verify`, { ck: ownerA, body: { challenge_id: er.data.challenge_id, code: ecode, pin: "111111" } });
+  t("an easy-to-guess key is refused", weak.status === 400 && /easy to guess/i.test(weak.data.error ?? ""));
+  t("a key that is not 6 digits is refused", (await call("POST", `${sKey}/vault/enroll/verify`, { ck: ownerA, body: { challenge_id: er.data.challenge_id, code: ecode, pin: "12ab56" } })).status === 400);
+  t("a wrong code does not set a key", (await call("POST", `${sKey}/vault/enroll/verify`, { ck: ownerA, body: { challenge_id: er.data.challenge_id, code: ecode === "000000" ? "111111" : "000000", pin: "483920" } })).status === 400);
+  const enrolled = await call("POST", `${sKey}/vault/enroll/verify`, { ck: ownerA, body: { challenge_id: er.data.challenge_id, code: ecode, pin: "483920" } });
+  const pass1 = passOf(enrolled);
+  const row = (await db()).merchants.find((m) => m.id === A);
+  t("the key is set and the vault opens for a few minutes", enrolled.status === 200 && !!pass1);
+  t("only a salted hash of the key is stored", /^scrypt\$16384\$/.test(row.vault_pin_hash ?? "") && !JSON.stringify(row).includes("483920"));
+  t("the owner's phone number is unchanged", row.phone === OWNER_PHONE);
+  t("a key can be chosen once; changing it needs 2Pay support", (await call("POST", `${sKey}/vault/enroll/request`, { ck: ownerA })).data.code === "VAULT_PIN_EXISTS");
+
+  const ck = `${ownerA}; 2pay_stepup=${pass1}`;
+  s0 = sms.length;
+  const added = await call("PUT", sKey, { ck, body: addExtra });
+  t("with the pass, an account can be ADDED", added.status === 200 && added.data.saved_banks.length === 2);
+  await wait(250);
+  t("the owner is told by SMS", sms.slice(s0).some((m) => m.to === OWNER_PHONE && /was just changed/i.test(m.message)));
+  const stored = (await db()).merchants.find((m) => m.id === A);
+  const dump = JSON.stringify([stored.saved_banks, stored.saved_wallets, stored.active_bank, stored.active_wallet]);
+  t("account numbers are encrypted in the database", !dump.includes("1000123456789") && !dump.includes("5555000011112222") && /enc:v1:/.test(dump), dump.slice(0, 160));
+  t("...with the last four digits kept for masking", /"last4":"2222"/.test(dump));
+  t("the app still shows them masked", added.data.saved_banks.some((b) => /2222$/.test(b.account_masked)) && !JSON.stringify(added.data).includes("5555000011112222"));
+  t("a pass for one approver does not work for a tampered cookie", (await call("PUT", sKey, { ck: `${ownerA}; 2pay_stepup=${pass1}x`, body: removeWallet })).data.code === "STEP_UP_REQUIRED");
+  const removed = await call("PUT", sKey, { ck, body: { banks: [BANK], wallets: [], active_bank_id: BANK.id, active_wallet_id: null } });
+  t("with the pass, an account can be REMOVED", removed.status === 200 && removed.data.saved_banks.length === 1 && removed.data.saved_wallets.length === 0);
+  const restore = await call("PUT", sKey, { ck, body: { banks: [BANK], wallets: [{ id: WALLET.id, institution: "Telebirr", account_number: "+251911223344" }], active_bank_id: BANK.id, active_wallet_id: WALLET.id } });
+  t("...and put back (the pass is still valid for three minutes)", restore.status === 200 && restore.data.active_wallet_id === WALLET.id);
+
+  // ---- the next day: key first, then the code
+  const locked = await call("PUT", sKey, { ck: ownerA, body: removeWallet });
+  t("without the pass, the same change is refused again", locked.status === 403 && locked.data.code === "STEP_UP_REQUIRED" && (await db()).merchants.find((m) => m.id === A).saved_wallets.length === 1);
+  s0 = sms.length;
+  const wrongKey = await call("POST", `${sKey}/step-up/request`, { ck: ownerA, body: { pin: "000001" } });
+  await wait(250);
+  t("a wrong key sends NO code (no SMS can be triggered without the key)", wrongKey.status === 400 && wrongKey.data.code === "VAULT_WRONG_KEY" && sms.length === s0 && /4 tries left/.test(wrongKey.data.error ?? ""), wrongKey.data.error);
+  t("a missing key sends no code either", (await call("POST", `${sKey}/step-up/request`, { ck: ownerA, body: {} })).status === 400);
+  const rq = await call("POST", `${sKey}/step-up/request`, { ck: ownerA, body: { pin: "483920", phone: "0911999999" } });
+  const ucode = await codeFor(OWNER_PHONE, s0);
+  t("the right key sends the code, only to the registered phone", rq.status === 200 && sms.slice(s0).length === 1 && sms[s0].to === OWNER_PHONE && !!ucode && /receives money/i.test(sms[s0].message), JSON.stringify(rq.data));
+  t("a sign-in code cannot be used here", (await call("POST", `${sKey}/step-up/verify`, { ck: ownerA, body: { challenge_id: "11111111-1111-4111-8111-111111111111", code: ucode } })).status === 400);
+  const badCode = await call("POST", `${sKey}/step-up/verify`, { ck: ownerA, body: { challenge_id: rq.data.challenge_id, code: ucode === "000000" ? "111111" : "000000" } });
+  t("a wrong code is refused", badCode.status === 400 && /incorrect/i.test(badCode.data.error ?? ""));
+  const unlocked = await call("POST", `${sKey}/step-up/verify`, { ck: ownerA, body: { challenge_id: rq.data.challenge_id, code: ucode } });
+  const pass2 = passOf(unlocked);
+  const sc = unlocked.headers.get("set-cookie") ?? "";
+  t("key + code give a short-lived pass (HttpOnly, SameSite=Strict, 3 minutes)", unlocked.status === 200 && !!pass2 && /HttpOnly/i.test(sc) && /SameSite=strict/i.test(sc) && /Max-Age=180/i.test(sc));
+  t("a code works once", (await call("POST", `${sKey}/step-up/verify`, { ck: ownerA, body: { challenge_id: rq.data.challenge_id, code: ucode } })).status === 400);
+  vaultState.ownerPass = pass2;
+
+  // ---- lock-out after five wrong keys, and nothing leaks
+  for (let i = 0; i < 4; i++) await call("POST", `${sKey}/step-up/request`, { ck: ownerA, body: { pin: "000002" } });
+  const fifth = await call("POST", `${sKey}/step-up/request`, { ck: ownerA, body: { pin: "000003" } });
+  t("the fifth wrong key locks the vault", fifth.status === 423 && fifth.data.code === "VAULT_LOCKED");
+  const whileLocked = await call("POST", `${sKey}/step-up/request`, { ck: ownerA, body: { pin: "483920" } });
+  t("even the right key is refused while it is locked", whileLocked.status === 423);
+  t("the app is told how long (never the key)", (await call("GET", `${sKey}/vault`, { ck: ownerA })).data.locked_minutes > 0);
+  await fetch(MOCK + "/rest/v1/merchants?id=eq." + A, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vault_failed: 0, vault_locked_until: null }) });
+
+  // ---- who can approve at all
+  t("a cashier cannot start the check", (await call("POST", `${sKey}/step-up/request`, { ck: cashierA, body: { pin: "483920" } })).status === 403);
+  t("a waiter cannot start the check", (await call("POST", `${sKey}/step-up/request`, { ck: crew.w2ck, body: { pin: "483920" } })).status === 403);
+  t("a cashier cannot change an account", (await call("PUT", sKey, { ck: cashierA, body: addExtra })).status === 403);
+  t("a waiter cannot change an account", (await call("PUT", sKey, { ck: crew.w2ck, body: addExtra })).status === 403);
   t("another business's owner cannot touch this vault", (await call("PUT", sKey, { ck: ownerB, body: removeWallet })).status === 403);
 
-  const before = sms.length;
-  const rq = await call("POST", `${sKey}/step-up/request`, { ck: ownerA, body: { phone: "0911999999" } }); // a phone in the request is ignored
-  await wait(300);
-  const sent = sms.slice(before);
-  const code = sent.at(-1)?.message.match(/(\d{6})/)?.[1];
-  t("the code goes only to the registered owner phone, whatever the request says", rq.status === 200 && sent.length === 1 && sent[0].to === OWNER_PHONE && !!code, JSON.stringify(sent.map((m) => m.to)));
-  t("the reply shows only a masked number and no code", rq.status === 200 && String(rq.data.phone_masked).includes("•••") && !("dev_code" in rq.data) && !JSON.stringify(rq.data).includes("911000001"));
-  t("the message says what the code is for", /changing where your business receives money/i.test(sent[0]?.message ?? ""));
-
-  const wrong = await call("POST", `${sKey}/step-up/verify`, { ck: ownerA, body: { challenge_id: rq.data.challenge_id, code: code === "000000" ? "111111" : "000000" } });
-  t("a wrong code is refused", wrong.status === 400 && /incorrect/i.test(wrong.data.error ?? ""));
-  t("a sign-in code cannot be used as a step-up code", (await call("POST", `${sKey}/step-up/verify`, { ck: ownerA, body: { challenge_id: "11111111-1111-4111-8111-111111111111", code } })).status === 400);
-  const ok = await call("POST", `${sKey}/step-up/verify`, { ck: ownerA, body: { challenge_id: rq.data.challenge_id, code } });
-  const pass = (ok.headers.get("set-cookie") ?? "").match(/2pay_stepup=([^;]+)/)?.[1];
-  t("the right code gives a short-lived pass", ok.status === 200 && !!pass && /HttpOnly/i.test(ok.headers.get("set-cookie") ?? "") && /SameSite=strict/i.test(ok.headers.get("set-cookie") ?? ""));
-  t("a code works once", (await call("POST", `${sKey}/step-up/verify`, { ck: ownerA, body: { challenge_id: rq.data.challenge_id, code } })).status === 400);
-  const ck = `${ownerA}; 2pay_stepup=${pass}`;
-
-  const mBefore = sms.length;
-  const done = await call("PUT", sKey, { ck, body: removeWallet });
-  t("with the pass, the change goes through", done.status === 200 && done.data.saved_wallets.length === 0);
-  await wait(300);
-  t("the owner is told about the change by SMS", sms.slice(mBefore).some((m) => m.to === OWNER_PHONE && /was just changed/i.test(m.message)));
-  const forged = `${ownerA}; 2pay_stepup=${pass}x`;
-  const tampered = await call("PUT", sKey, { ck: forged, body: { banks: [], wallets: [], active_bank_id: null, active_wallet_id: null } });
-  t("a tampered pass is refused and nothing changes", tampered.status === 403 && tampered.data.code === "STEP_UP_REQUIRED" && (await db()).merchants.find((m) => m.id === A).saved_banks.length === 1);
-
-  // put the wallet back (a restored account counts as a change too, and the pass is still valid for a few minutes)
-  const restore = await call("PUT", sKey, { ck, body: { banks: [BANK], wallets: [{ id: WALLET.id, institution: "Telebirr", account_number: "+251911223344" }], active_bank_id: BANK.id, active_wallet_id: WALLET.id } });
-  t("the owner can put an account back while the pass is valid", restore.status === 200 && restore.data.active_wallet_id === WALLET.id);
-  const noPass = await call("PUT", sKey, { ck: ownerA, body: removeWallet });
-  t("without the pass, the same removal is refused again", noPass.status === 403 && noPass.data.code === "STEP_UP_REQUIRED" && (await db()).merchants.find((m) => m.id === A).saved_wallets.length === 1);
-
-  // first setup is free
+  // ---- a business with no key: the very first account still needs the key and a phone code
   const first = await call("PUT", `/api/merchants/${B}/settlement`, { ck: ownerB, body: { banks: [{ id: "d0d0d0d0-0000-4000-8000-000000000003", institution: "Awash Bank", account_number: "1000987654321" }], wallets: [], active_bank_id: "d0d0d0d0-0000-4000-8000-000000000003", active_wallet_id: null } });
-  t("the very first account can be set up without a code", first.status === 200 && first.data.active_bank_id === "d0d0d0d0-0000-4000-8000-000000000003", JSON.stringify(first.data).slice(0, 120));
-  t("...but changing it afterwards needs one", (await call("PUT", `/api/merchants/${B}/settlement`, { ck: ownerB, body: { banks: [], wallets: [], active_bank_id: null, active_wallet_id: null } })).data.code === "STEP_UP_REQUIRED");
-  const crossPass = await call("PUT", `/api/merchants/${B}/settlement`, { ck: `${ownerB}; 2pay_stepup=${pass}`, body: { banks: [], wallets: [], active_bank_id: null, active_wallet_id: null } });
-  t("a pass earned for one business does not open another", crossPass.status === 403 && crossPass.data.code === "STEP_UP_REQUIRED");
+  t("the very first account also needs a security key", first.status === 403 && first.data.code === "VAULT_SETUP_REQUIRED", JSON.stringify(first.data));
+  t("a pass earned for one business does not open another", (await call("PUT", `/api/merchants/${B}/settlement`, { ck: `${ownerB}; 2pay_stepup=${pass2}`, body: { banks: [{ id: "d0d0d0d0-0000-4000-8000-000000000003", institution: "Awash Bank", account_number: "1000987654321" }], wallets: [], active_bank_id: "d0d0d0d0-0000-4000-8000-000000000003", active_wallet_id: null } })).status === 403);
 
   const actions = new Set((await db()).audit_log.map((r) => r.action));
-  for (const a of ["settlement.stepup", "settlement.blocked"]) t(`audit has ${a}`, actions.has(a));
+  for (const a of ["settlement.stepup", "settlement.blocked", "vault.enroll", "vault.key.wrong", "vault.locked"]) t(`audit has ${a}`, actions.has(a));
+  t("the audit log never holds a key, a code or an account number", !JSON.stringify((await db()).audit_log).match(/483920|1000123456789|5555000011112222/));
 }
 
+section("managers: appointed approvers with their own key and phone");
+{
+  await fetch(MOCK + "/__reset_limits");
+  const sKey = `/api/merchants/${A}/settlement`;
+  const MPHONE = "+251911000075";
+  const mg = await call("POST", `/api/merchants/${A}/staff`, { ck: ownerA, body: { name: "Mulu", phone: "0911000075", role: "MANAGER" } });
+  t("the owner appoints a manager (team number M-…)", mg.status === 201 && mg.data.role === "MANAGER" && /^M-\d{3}$/.test(mg.data.team_no), JSON.stringify(mg.data).slice(0, 120));
+  const tk = mg.data.invite_link.split("/join/")[1];
+  const r0 = await call("POST", "/api/auth/otp/request", { body: { invite_token: tk } });
+  await wait(250);
+  const code = sms.filter((m) => m.to === MPHONE).at(-1)?.message.match(/(\d{6})/)?.[1];
+  const act = await call("POST", "/api/auth/otp/verify", { body: { challenge_id: r0.data.challenge_id, code, invite_token: tk, device_id: "manager-install-mmmmmmmmm" } });
+  const mck = `2pay_session=${(act.headers.get("set-cookie") ?? "").split("2pay_session=")[1]?.split(";")[0]}`;
+  const payload = JSON.parse(Buffer.from(mck.split("=")[1].split(".")[0], "base64url").toString());
+  t("the manager activates their own phone and signs in as MANAGER", act.status === 200 && act.data.role === "MANAGER" && payload.rl === "MANAGER" && !!payload.sid && payload.mid === A);
+
+  const pr = await call("GET", "/api/portal", { ck: mck });
+  t("the portal knows the manager", pr.status === 200 && pr.data.role === "MANAGER" && pr.data.staff?.name === "Mulu");
+  t("a manager sees the payment accounts, masked", (await call("GET", sKey, { ck: mck })).status === 200);
+  for (const [name, method, path, body] of [
+    ["the team list", "GET", `/api/merchants/${A}/staff`],
+    ["adding people", "POST", `/api/merchants/${A}/staff`, { name: "Sneaky Pete", phone: "0911000098", role: "MANAGER" }],
+    ["refunds", "GET", `/api/refunds?merchant_id=${A}`],
+    ["the profile", "GET", `/api/merchants/${A}/profile`],
+    ["ad campaigns", "GET", `/api/ads/campaigns?merchant_id=${A}`],
+  ]) t(`a manager cannot use ${name}`, (await call(method, path, { ck: mck, body })).status === 403);
+  t("a manager still runs the terminal", (await call("POST", "/api/transactions", { ck: mck, body: { merchant_id: A, amount: 20 } })).status === 201);
+
+  const extra2 = { id: "e1e1e1e1-0000-4000-8000-000000000010", institution: "Wegagen Bank", account_number: "7777000011113333" };
+  const change = { banks: [{ id: "b0b0b0b0-0000-4000-8000-000000000001" }, extra2], wallets: [{ id: "c0c0c0c0-0000-4000-8000-000000000002" }], active_bank_id: "b0b0b0b0-0000-4000-8000-000000000001", active_wallet_id: "c0c0c0c0-0000-4000-8000-000000000002" };
+  const blocked = await call("PUT", sKey, { ck: mck, body: change });
+  t("a manager needs a key of their own first", blocked.status === 403 && blocked.data.code === "VAULT_SETUP_REQUIRED" && blocked.data.need === "pin");
+  const ownerPassOnly = await call("PUT", sKey, { ck: `${mck}; 2pay_stepup=${vaultState.ownerPass}`, body: change });
+  t("the OWNER's pass does not work for a manager", ownerPassOnly.status === 403);
+
+  const s0 = sms.length;
+  const me = await call("POST", `${sKey}/vault/enroll/request`, { ck: mck });
+  await wait(250);
+  const ecode = sms.slice(s0).filter((m) => m.to === MPHONE).at(-1)?.message.match(/(\d{6})/)?.[1];
+  t("the manager's code goes to the MANAGER's phone, not the owner's", me.status === 200 && sms.slice(s0).every((m) => m.to === MPHONE) && !!ecode);
+  const mv = await call("POST", `${sKey}/vault/enroll/verify`, { ck: mck, body: { challenge_id: me.data.challenge_id, code: ecode, pin: "729104" } });
+  const mpass = (mv.headers.get("set-cookie") ?? "").match(/2pay_stepup=([^;]+)/)?.[1];
+  t("the manager chooses their own key", mv.status === 200 && !!mpass && /^scrypt/.test((await db()).merchant_staff.find((x) => x.phone === MPHONE)?.vault_pin_hash ?? ""));
+  t("the owner's key is untouched", /^scrypt/.test((await db()).merchants.find((m) => m.id === A).vault_pin_hash));
+
+  const s1 = sms.length;
+  const done = await call("PUT", sKey, { ck: `${mck}; 2pay_stepup=${mpass}`, body: change });
+  await wait(250);
+  t("with their key and code, a manager can add an account", done.status === 200 && done.data.saved_banks.length === 2);
+  t("the OWNER is told about a change a manager made", sms.slice(s1).some((m) => m.to === "+251911000001" && /was just changed/i.test(m.message)));
+  const aud = (await db()).audit_log.filter((r) => r.action === "settlement.update").at(-1);
+  t("the audit log says a manager did it", aud?.details?.approver === "MANAGER" && aud?.role === "MANAGER", JSON.stringify(aud?.details));
+  t("a manager's pass does not work for the owner", (await call("PUT", sKey, { ck: `${ownerA}; 2pay_stepup=${mpass}`, body: { banks: [{ id: "b0b0b0b0-0000-4000-8000-000000000001" }], wallets: [{ id: "c0c0c0c0-0000-4000-8000-000000000002" }], active_bank_id: "b0b0b0b0-0000-4000-8000-000000000001", active_wallet_id: "c0c0c0c0-0000-4000-8000-000000000002" } })).data.code === "STEP_UP_REQUIRED");
+  t("removing the manager removes their power at once", (await call("DELETE", `/api/merchants/${A}/staff/${mg.data.id}`, { ck: ownerA })).status === 200 && (await call("PUT", sKey, { ck: `${mck}; 2pay_stepup=${mpass}`, body: { banks: [{ id: "b0b0b0b0-0000-4000-8000-000000000001" }], wallets: [], active_bank_id: "b0b0b0b0-0000-4000-8000-000000000001", active_wallet_id: null } })).status === 403);
+
+  // put the business back to bank + wallet for the sections that follow
+  const ownerPass = vaultState.ownerPass;
+  const back = await call("PUT", sKey, { ck: `${ownerA}; 2pay_stepup=${ownerPass}`, body: { banks: [{ id: "b0b0b0b0-0000-4000-8000-000000000001" }], wallets: [{ id: "c0c0c0c0-0000-4000-8000-000000000002" }], active_bank_id: "b0b0b0b0-0000-4000-8000-000000000001", active_wallet_id: "c0c0c0c0-0000-4000-8000-000000000002" } });
+  t("(the owner tidies up the extra bank)", back.status === 200 || back.status === 403);
+}
+
+section("national ID (Fayda): prove the owner is who they say");
+{
+  await fetch(MOCK + "/__reset_limits");
+  const startUrl = `/api/merchants/${A}/fayda/start`;
+  const cookieOf = (r, name) => (r.headers.get("set-cookie") ?? "").match(new RegExp(`${name}=([^;]*)`))?.[1];
+  t("a cashier cannot start it", (await call("POST", startUrl, { ck: cashierA })).status === 403);
+  t("a waiter cannot start it", (await call("POST", startUrl, { ck: crew.w2ck })).status === 403);
+  t("another business's owner cannot start it for this one", (await call("POST", startUrl, { ck: ownerB })).status === 403);
+
+  const st = await call("POST", startUrl, { ck: ownerA, body: { lang: "am" } });
+  const fc = cookieOf(st, "2pay_fayda");
+  const au = new URL(st.data.url ?? "http://x");
+  t("it hands the browser the provider's sign-in address (standard OpenID Connect with PKCE)", st.status === 200 && au.origin === "http://localhost:4040" && au.searchParams.get("code_challenge_method") === "S256" && au.searchParams.get("client_id") === "2pay-e2e" && au.searchParams.get("ui_locales") === "am" && !!au.searchParams.get("nonce"));
+  t("the state cookie is HttpOnly, signed, short-lived and scoped to the callback", /HttpOnly/i.test(st.headers.get("set-cookie") ?? "") && /Path=\/api\/fayda/i.test(st.headers.get("set-cookie") ?? "") && /Max-Age=600/i.test(st.headers.get("set-cookie") ?? "") && !!fc);
+  t("no verifier or key ever reaches the browser in the body", !JSON.stringify(st.data).includes("verifier") && !JSON.stringify(st.data).includes("BEGIN"));
+
+  // the person signs in at the provider (the pretend one approves at once) and is sent back
+  const toIdp = await fetch(st.data.url, { redirect: "manual" });
+  const back = new URL(toIdp.headers.get("location"));
+  const callbackPath = back.pathname + back.search;
+  t("the provider sends them back to 2Pay's callback with a code and our state", toIdp.status === 302 && back.pathname === "/api/fayda/callback" && !!back.searchParams.get("code") && back.searchParams.get("state") === au.searchParams.get("state"));
+
+  const wrongState = await call("GET", callbackPath.replace(/state=[^&]+/, "state=forged"), { ck: `${ownerA}; 2pay_fayda=${fc}`, raw: true });
+  t("a forged state does nothing", wrongState.status === 307 && /fayda=error/.test(wrongState.headers.get("location") ?? ""));
+  t("...and verified nothing", (await db()).merchants.find((m) => m.id === A).fayda_verified_at == null);
+  const noCookie = await call("GET", callbackPath, { ck: ownerA, raw: true });
+  t("a callback without our cookie does nothing", /fayda=error/.test(noCookie.headers.get("location") ?? ""));
+  const otherPerson = await call("GET", callbackPath, { ck: `${ownerB}; 2pay_fayda=${fc}`, raw: true });
+  t("a different signed-in person cannot complete someone else's check", /fayda=error/.test(otherPerson.headers.get("location") ?? ""));
+
+  const tIdp = await fetch(st.data.url, { redirect: "manual" }); // a fresh code (the one above was never spent)
+  const back2 = new URL(tIdp.headers.get("location"));
+  const ok = await call("GET", back2.pathname + back2.search, { ck: `${ownerA}; 2pay_fayda=${fc}`, raw: true });
+  t("the real return verifies the owner and lands back on the profile", [302, 307].includes(ok.status) && /fayda=ok/.test(ok.headers.get("location") ?? "") && /tab=profile/.test(ok.headers.get("location") ?? ""), ok.headers.get("location") ?? "");
+  const m = (await db()).merchants.find((x) => x.id === A);
+  t("the check is recorded", !!m.fayda_verified_at);
+  t("only a keyed fingerprint of the national ID is kept, never the ID", /^[0-9a-f]{64}$/.test(m.fayda_subject_hash ?? "") && !JSON.stringify(m).includes("uin-7000123"));
+  t("the name is stored encrypted", /^enc:v1:/.test(m.fayda_name ?? "") && !JSON.stringify(m).includes("Abebe Kebede Tesfaye"));
+  t("the code was exchanged using our signed assertion and PKCE (the provider checked both)", fayda.seen.tokenCalls >= 1 && fayda.seen.rejected.length === 0, JSON.stringify(fayda.seen.rejected));
+  const prof = await call("GET", `/api/merchants/${A}/profile`, { ck: ownerA });
+  t("the profile shows who was verified (English name) and that the provider is on", prof.status === 200 && prof.data.fayda.configured === true && prof.data.fayda.name === "Abebe Kebede Tesfaye" && !!prof.data.fayda_verified_at && !("fayda_name" in prof.data));
+  const replay = await call("GET", back2.pathname + back2.search, { ck: `${ownerA}; 2pay_fayda=${fc}`, raw: true });
+  t("a returned code cannot be replayed", /fayda=error/.test(replay.headers.get("location") ?? "") && fayda.seen.rejected.some((x) => /reused/.test(x)));
+  const cancelled = await call("GET", "/api/fayda/callback?error=access_denied", { ck: `${ownerA}; 2pay_fayda=${fc}`, raw: true });
+  t("cancelling at the provider is handled", /fayda=cancelled/.test(cancelled.headers.get("location") ?? ""));
+  t("the TIN is encrypted in the database too", /^enc:v1:/.test((await db()).merchants.find((x) => x.id === A).tin ?? ""));
+  const kyc = await call("GET", "/api/admin/kyc?status=VERIFIED", { ck: admin });
+  t("an admin reviewing KYC still sees the TIN, decrypted on the server", kyc.status === 200 && kyc.data.some((r) => r.id === A && /^\d{10}$/.test(String(r.tin))), JSON.stringify(kyc.data?.map?.((r) => r.tin)));
+}
 section("customer routing hub: the customer picks their app, the server picks the merchant's account");
 {
   const mk = async () => (await call("POST", "/api/transactions", { ck: ownerA, body: { merchant_id: A, amount: 100 } })).data.token;

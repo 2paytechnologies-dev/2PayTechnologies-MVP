@@ -59,13 +59,20 @@ function playClip(): boolean {
   }
 }
 
+function ensureCtx(): AudioContext | null {
+  if (ctx) return ctx;
+  try {
+    const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    if (Ctor) ctx = new Ctor();
+  } catch {
+    /* no audio on this device: the screen still confirms */
+  }
+  return ctx;
+}
+
 export function primeAudio() {
   try {
-    if (!ctx) {
-      const Ctor = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
-      if (!Ctor) return;
-      ctx = new Ctor();
-    }
+    if (!ensureCtx() || !ctx) return;
     preloadAnnouncement();
     if (ctx.state === "suspended") void ctx.resume();
     // A silent one-sample buffer fully unlocks output on iOS Safari.
@@ -185,4 +192,27 @@ export function playSettlementChime(lang: Lang = "en") {
   } catch {
     /* ignore */
   }
+}
+/**
+ * The customer's phone: sound the chime and the spoken word when THEIR receipt is on screen. A browser only allows sound
+ * after the person has touched the page; a customer coming back from their bank app has not, so if sound is blocked it starts
+ * at their first touch (within 30 seconds) rather than staying silent for good. On the merchant's screens (where the first touch
+ * on the app already happened) use playSettlementChime directly.
+ */
+export function announceWhenAllowed(lang: Lang) {
+  const c = ensureCtx();
+  if (!c) return void playSettlementChime(lang);
+  preloadAnnouncement();
+  void c.resume().catch(() => {});
+  setTimeout(() => {
+    if (c.state === "running") return playSettlementChime(lang);
+    const events = ["pointerdown", "keydown", "touchstart"] as const;
+    const fire = () => {
+      events.forEach((e) => window.removeEventListener(e, fire));
+      primeAudio();
+      playSettlementChime(lang);
+    };
+    events.forEach((e) => window.addEventListener(e, fire, { once: true, passive: true }));
+    setTimeout(() => events.forEach((e) => window.removeEventListener(e, fire)), 30_000);
+  }, 150);
 }

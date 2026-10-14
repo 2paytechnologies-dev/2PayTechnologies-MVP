@@ -3,6 +3,7 @@ import { feeBreakdown } from "@/lib/fee";
 import { toMasked, type SavedAccount } from "@/lib/settlement";
 import { nodeFeeContext } from "@/lib/watchdog";
 import { railMode } from "@/lib/rails";
+import { openAccount } from "@/lib/fieldcrypt";
 
 /** Postgres 42703 (undefined column) / PostgREST PGRST204 (column missing from schema cache): a migration has not been applied. */
 const isSchemaDrift = (e: { code?: string; message?: string }) => e.code === "42703" || e.code === "PGRST204" || /schema cache/i.test(e.message ?? "");
@@ -31,7 +32,7 @@ export async function createPayNode(
 
   const { data: merchant, error: mErr } = await admin
     .from("merchants")
-    .select("id, active_bank, active_wallet, kyc_status, static_qr_enabled")
+    .select("id, active_bank, active_wallet, kyc_status, static_qr_enabled, fayda_verified_at")
     .eq("id", merchantId)
     .maybeSingle();
   if (mErr) {
@@ -52,8 +53,17 @@ export async function createPayNode(
     return { ok: false, status: 403, body: { error: "Business verification is required before taking live payments.", code: "KYC_REQUIRED" } };
   }
 
-  const bank = merchant.active_bank as SavedAccount | null;
-  const wallet = merchant.active_wallet as SavedAccount | null;
+  // Account numbers are stored encrypted; open them here (server side) only to make the masked snapshot.
+  // With KYC_REQUIRE_FAYDA=true the owner's national ID (Fayda) must also be verified before live payments are taken.
+  if (railMode() === "live" && process.env.KYC_REQUIRE_FAYDA === "true" && !merchant.fayda_verified_at) {
+    return { ok: false, status: 403, body: { error: "The owner must verify their national ID (Fayda) before taking live payments.", code: "FAYDA_REQUIRED" } };
+  }
+
+  const bank: SavedAccount | null = openAccount(merchant.active_bank);
+  const wallet: SavedAccount | null = openAccount(merchant.active_wallet);
+  if ((merchant.active_bank && !bank) || (merchant.active_wallet && !wallet)) {
+    return { ok: false, status: 503, body: { error: "The payment account cannot be read right now. Contact 2Pay support.", code: "ACCOUNT_UNREADABLE" } };
+  }
   if (!bank && !wallet) {
     return { ok: false, status: 409, body: { error: "No settlement account configured. Add and activate a bank or wallet first.", code: "NO_ACTIVE_ROUTING" } };
   }

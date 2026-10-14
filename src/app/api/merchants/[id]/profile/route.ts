@@ -4,16 +4,24 @@ import { requireMerchant } from "@/lib/guard";
 import { isUuid } from "@/lib/settlement";
 import { maskTin, validateProfile } from "@/lib/kyc";
 import { audit } from "@/lib/audit";
+import { sealField, tryOpenField } from "@/lib/fieldcrypt";
+import { faydaConfigured } from "@/lib/fayda";
 
 export const dynamic = "force-dynamic";
 
-const COLUMNS = "legal_name, tin, business_license, address, location, kyc_status, kyc_note, kyc_submitted_at, kyc_reviewed_at, static_qr_enabled, sms_receipts";
+const COLUMNS = "legal_name, tin, business_license, address, location, kyc_status, kyc_note, kyc_submitted_at, kyc_reviewed_at, static_qr_enabled, sms_receipts, fayda_verified_at, fayda_name";
 const bad = (error: string, status = 400) => NextResponse.json({ error }, { status });
 
 /** The TIN is shown masked; the full number never leaves the server again after it is submitted. */
 function view(row: Record<string, unknown>) {
-  const { tin, ...rest } = row;
-  return { ...rest, tin_masked: maskTin((tin as string) ?? null), has_tin: !!tin };
+  const { tin, fayda_name, ...rest } = row;
+  return {
+    ...rest,
+    tin_masked: maskTin(tryOpenField(tin as string | null, "tin")),
+    has_tin: !!tin,
+    // The owner's own national-ID check: whether the provider is set up, whether it is required, and who it verified.
+    fayda: { configured: faydaConfigured(), required: process.env.KYC_REQUIRE_FAYDA === "true", name: tryOpenField(fayda_name as string | null, "national-id") },
+  };
 }
 
 export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -58,11 +66,12 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
     let tin = body.tin;
     if (tin === undefined || tin === "") {
       const { data: cur } = await getAdminClient().from("merchants").select("tin").eq("id", id).maybeSingle();
-      tin = cur?.tin ?? undefined;
+      tin = tryOpenField(cur?.tin, "tin") ?? undefined; // stored encrypted; opened only here, on the server, to be checked again
     }
     const v = validateProfile({ ...body, tin });
     if (!v.ok) return bad(v.error);
     Object.assign(update, v.profile, { kyc_status: "SUBMITTED", kyc_submitted_at: new Date().toISOString(), kyc_reviewed_at: null, kyc_note: null });
+    if (typeof update.tin === "string") update.tin = sealField(update.tin, "tin"); // encrypted at rest
   }
   if (!Object.keys(update).length) return bad("Nothing to update");
 

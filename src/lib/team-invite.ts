@@ -8,7 +8,7 @@ export const appLinkFor = (token: string) => `twopay://activate/${token}`;
 
 /** The invitation text. Both languages, because the person may read either. */
 export function inviteSms(p: { business: string; teamNo: string; role: StaffRole; link: string }): string {
-  const roleEn = p.role === "WAITER" ? "waiter" : "cashier";
-  const roleAm = p.role === "WAITER" ? "አስተናጋጅ" : "ገንዘብ ተቀባይ";
+  const roleEn = p.role === "WAITER" ? "waiter" : p.role === "MANAGER" ? "manager" : "cashier";
+  const roleAm = p.role === "WAITER" ? "አስተናጋጅ" : p.role === "MANAGER" ? "ሥራ አስኪያጅ" : "ገንዘብ ተቀባይ";
   return `2Pay: ${p.business} added you as a ${roleEn} (${p.teamNo}). Open on your phone to start: ${p.link}\n2Pay፦ ${p.business} እንደ ${roleAm} (${p.teamNo}) አክሎዎታል። ለመጀመር በስልክዎ ይክፈቱ፦ ${p.link}`;
 }

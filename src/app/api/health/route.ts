@@ -4,6 +4,8 @@ import { railMode } from "@/lib/rails";
 import { authEnforced, sessionSecret } from "@/lib/auth";
 import { smsConfigured } from "@/lib/sms";
 import { APP_VERSION } from "@/lib/brand";
+import { encryptionActive } from "@/lib/fieldcrypt";
+import { faydaConfigured } from "@/lib/fayda";
 import { checkSchema, type SchemaStatus } from "@/lib/schema-check";
 
 export const dynamic = "force-dynamic";
@@ -34,6 +36,8 @@ export async function GET() {
     migrationsToRun: schema.missing,
     rail: { mode: railMode(), provider: process.env.RAIL_PROVIDER ?? "arifpay" },
     auth: { enforced: authEnforced(), sessionSecretSet: !!sessionSecret(), smsConfigured: smsConfigured() },
+    // V2.4: whether account numbers/TINs are encrypted at rest, and whether national ID (Fayda) sign-in is configured.
+    security: { fieldEncryption: encryptionActive(), faydaConfigured: faydaConfigured() },
   };
   return NextResponse.json(body, { status: ok ? 200 : 503, headers: { "Cache-Control": "no-store" } });
 }

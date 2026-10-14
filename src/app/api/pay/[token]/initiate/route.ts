@@ -9,10 +9,11 @@ import { clientIp } from "@/lib/audit";
 import { rateLimit } from "@/lib/ratelimit";
 import { saveReceiptContact } from "@/lib/receipts";
 import { cleanTip } from "@/lib/team";
-import { chooseRoute, findPayerApp } from "@/lib/routing-hub";
-import { needsPayload, platformOf, resolveAppLink } from "@/lib/applinks";
+import { chooseRoute, findPayerApp, transferFor } from "@/lib/routing-hub";
+import { bankCodeFor, hasLinks, needsPayload, platformOf, resolveAppLink } from "@/lib/applinks";
 import { buildEthQr } from "@/lib/ethqr";
 import { referenceFor } from "@/lib/format";
+import { openAccounts, type StoredAccount } from "@/lib/fieldcrypt";
 import type { SavedAccount } from "@/lib/settlement";
 
 export const dynamic = "force-dynamic";
@@ -42,8 +43,8 @@ interface MerchantInfo {
   business_name: string;
   category: string;
   location: string | null;
-  saved_banks: SavedAccount[] | null;
-  saved_wallets: SavedAccount[] | null;
+  saved_banks: StoredAccount[] | null;
+  saved_wallets: StoredAccount[] | null;
 }
 
 const fail = (error: string, status: number) => NextResponse.json({ error }, { status });
@@ -151,7 +152,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
   const beneficiary =
     method === "bank"
       ? (() => {
-          const acct = (merchant?.saved_banks ?? []).find((a) => a.id === routed.id);
+          const acct = openAccounts(merchant?.saved_banks).find((a) => a.id === routed.id);
           return acct ? { institution: acct.institution, accountNumber: acct.account_number } : null;
         })()
       : undefined;
@@ -246,15 +247,29 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
   }
 
   if (payerPhone) await saveReceiptContact(admin, tx.id, payerPhone, lang);
-  // Open the CUSTOMER's app if the operator configured a link for it (RAIL_APP_LINKS), pre-filled with the ETHQR payload
-  // when the template wants one. Never required: without a link, or if the app does not open, the web checkout carries on.
+  // Open the CUSTOMER's own app on the right screen, pre-filled, if the operator configured a link for it (RAIL_APP_LINKS).
+  // Same bank: its "transfer within the bank". A different bank: its "transfer to other banks" (EthSwitch) screen with the
+  // merchant's bank selected and the account number and amount filled in. Never required: without a link, or if the app does
+  // not open, the web checkout carries on.
   const appName = payerApp?.name ?? routed.institution;
   const rawLinks = process.env.RAIL_APP_LINKS;
-  let payload: string | null = null;
-  if (needsPayload(rawLinks, appName)) {
-    const acct = (method === "bank" ? merchant?.saved_banks : merchant?.saved_wallets)?.find((a) => a.id === routed.id);
-    if (acct) payload = buildEthQr({ merchantName: merchant?.business_name ?? "2Pay merchant", category: merchant?.category ?? "Retail", city: merchant?.location, account: { institution: acct.institution, account_number: acct.account_number }, amount: charge, reference: referenceFor(tx.id) });
+  let appLink: string | undefined;
+  if (hasLinks(rawLinks, appName)) {
+    const acct = openAccounts(method === "bank" ? merchant?.saved_banks : merchant?.saved_wallets).find((a) => a.id === routed.id);
+    const ref = referenceFor(tx.id);
+    const transfer = transferFor(payerApp, routed.institution, method);
+    const payload =
+      acct && needsPayload(rawLinks, appName)
+        ? buildEthQr({ merchantName: merchant?.business_name ?? "2Pay merchant", category: merchant?.category ?? "Retail", city: merchant?.location, account: { institution: acct.institution, account_number: acct.account_number }, amount: charge, reference: ref })
+        : null;
+    appLink = resolveAppLink(
+      rawLinks,
+      appName,
+      platformOf(req.headers.get("user-agent")),
+      { url: session.checkoutUrl, payload, amount: charge.toFixed(2), ref, account: acct?.account_number ?? null, bank: routed.institution, bank_code: bankCodeFor(routed.institution), name: merchant?.business_name ?? null },
+      transfer,
+    );
   }
-  const appLink = resolveAppLink(rawLinks, appName, platformOf(req.headers.get("user-agent")), { url: session.checkoutUrl, payload, amount: charge.toFixed(2), ref: referenceFor(tx.id) });
-  return NextResponse.json({ mode: "redirect", url: session.checkoutUrl, appLink });
+  // `transfer` tells the pay page which screen it is opening, so it can say so ("Opening Awash Bank: transfer to other banks").
+  const transferKind = transferFor(payerApp, routed.institution, method);  return NextResponse.json({ mode: "redirect", url: session.checkoutUrl, appLink, transfer: transferKind, to: routed.institution });
 }

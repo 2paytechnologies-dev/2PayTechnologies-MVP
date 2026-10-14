@@ -1,8 +1,8 @@
 {
-    "version":  "2.3.0",
+    "version":  "2.4.0",
     "minVersion":  "2.0.0",
-    "apk":  "/downloads/2pay-merchant-2.3.0.apk",
-    "notes":  "Waiter app deep link (twopay://activate), terminal lock for team members, install id.",
-    "sha256":  "020dbf8f62e92afcba5e86742b65ac97f733775d5c3fd2268da75565bbde9ccc",
-    "size":  1790305
+    "apk":  "/downloads/2pay-merchant-2.4.0.apk",
+    "notes":  "2.4.0: security key + OTP for account changes, instant chime and voice, faster start",
+    "sha256":  "4cb5b5a8a2899a39265b2070e3f69238503bafd68288926abc71c375385fb34c",
+    "size":  1790523
 }

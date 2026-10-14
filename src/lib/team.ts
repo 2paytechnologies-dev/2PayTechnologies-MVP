@@ -4,8 +4,8 @@ import { createHash, randomBytes } from "node:crypto";
  * Team nodes and tips: the pure rules. Everything here is unit tested; the routes only wire it to the database.
  */
 
-export type StaffRole = "CASHIER" | "WAITER";
-export const STAFF_ROLES: readonly StaffRole[] = ["WAITER", "CASHIER"];
+export type StaffRole = "CASHIER" | "WAITER" | "MANAGER";
+export const STAFF_ROLES: readonly StaffRole[] = ["WAITER", "CASHIER", "MANAGER"];
 /** "n" team members per business, with a ceiling so a runaway script cannot fill the table. */
 export const MAX_TEAM = 200;
 
@@ -13,7 +13,7 @@ export const MAX_TEAM = 200;
 export const INVITE_TTL_MS = 72 * 3600_000;
 
 // ------------------------------------------------------------------ team numbers
-const PREFIX: Record<StaffRole, string> = { WAITER: "W", CASHIER: "C" };
+const PREFIX: Record<StaffRole, string> = { WAITER: "W", CASHIER: "C", MANAGER: "M" };
 
 /** W-001, W-014, C-002 ... Numbers are per business and role; they are never reused (removed members keep theirs). */
 export const formatTeamNo = (role: StaffRole, n: number) => `${PREFIX[role]}-${String(Math.max(1, Math.floor(n))).padStart(3, "0")}`;

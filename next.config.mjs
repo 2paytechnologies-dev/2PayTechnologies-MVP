@@ -1,19 +1,18 @@
 /**
- * Content-Security-Policy.
- *  ENFORCED (safe on every page): pages can never be framed by another site, can't be given a different <base>, can't
- *  post forms to another site, and can't embed plugins.
- *  REPORT-ONLY (not enforced yet): the strict policy we want, with a violation report so it can be tightened from real
- *  traffic. It still allows inline scripts/styles because Next injects inline bootstrap scripts; removing 'unsafe-inline'
- *  needs per-request nonces and should be done and tested as its own change. Promote it to enforced once reports are clean.
+ * Content-Security-Policy, ENFORCED in production: nothing loads from, or is sent to, any other site (scripts, fonts, media,
+ * workers, connections; images only over https for merchants' ad pictures), and a page can never be framed or given another
+ * <base> or form target. Inline scripts/styles are still allowed because Next injects its bootstrap inline; removing
+ * 'unsafe-inline' needs per-request nonces and is its own change. Development also needs eval for hot reload.
  */
-const enforced = ["frame-ancestors 'none'", "base-uri 'self'", "form-action 'self'", "object-src 'none'"].join("; ");
-const reportOnly = [
+const dev = process.env.NODE_ENV !== "production";
+const enforced = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
+  `script-src 'self' 'unsafe-inline'${dev ? " 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: blob: https:", // merchant ad images are https URLs
+  "img-src 'self' data: blob: https:", // merchants' ad pictures are https URLs
   "font-src 'self' data:",
-  "connect-src 'self'",
+  `connect-src 'self'${dev ? " ws: wss:" : ""}`,
+  "media-src 'self' blob:",
   "manifest-src 'self'",
   "worker-src 'self'",
   "frame-ancestors 'none'",
@@ -21,10 +20,8 @@ const reportOnly = [
   "form-action 'self'",
   "object-src 'none'",
 ].join("; ");
-
 const securityHeaders = [
   { key: "Content-Security-Policy", value: enforced },
-  { key: "Content-Security-Policy-Report-Only", value: reportOnly },
   { key: "X-Content-Type-Options", value: "nosniff" },
   { key: "X-Frame-Options", value: "DENY" }, // pay and terminal screens must never be framed by another site
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },

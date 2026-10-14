@@ -6,6 +6,7 @@ import { Logo } from "@/components/Logo";
 import { LanguageMenu } from "@/components/LanguageMenu";
 import { fmt, formatEAT } from "@/lib/format";
 import { useI18n, type Key } from "@/lib/i18n";
+import { announceWhenAllowed } from "@/lib/chime";
 import type { ReceiptView, ServedAd } from "@/lib/types";
 
 type State = { kind: "loading" } | { kind: "confirming" } | { kind: "ready"; receipt: ReceiptView } | { kind: "error"; key: Key };
@@ -89,6 +90,7 @@ export default function ReceiptPage({ params }: { params: Promise<{ token: strin
   const [state, setState] = useState<State>({ kind: "loading" });
   const [closed, setClosed] = useState(false);
   const billed = useRef(false);
+  const announced = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -105,7 +107,7 @@ export default function ReceiptPage({ params }: { params: Promise<{ token: strin
         // The payer is back from their bank/wallet before the rail has confirmed: keep checking for a while.
         if (r.status === 409 && d.status === "PROCESSING" && Date.now() - startedAt < CONFIRM_FOR_MS) {
           setState({ kind: "confirming" });
-          timer = setTimeout(load, 2000);
+          timer = setTimeout(load, Date.now() - startedAt < 20_000 ? 700 : 2000); // quick while the rail is about to confirm
           return;
         }
         setState({ kind: "error", key: r.status === 409 ? (d.status === "PROCESSING" ? "receipt.err.late" : "receipt.err.notDone") : r.status === 404 ? "receipt.err.notFound" : "receipt.err.load" });
@@ -119,6 +121,13 @@ export default function ReceiptPage({ params }: { params: Promise<{ token: strin
       clearTimeout(timer);
     };
   }, [token]);
+
+  // The customer hears it too: the chime the moment their receipt is issued, then the word (in their language).
+  useEffect(() => {
+    if (state.kind !== "ready" || announced.current) return;
+    announced.current = true;
+    announceWhenAllowed(lang);
+  }, [state.kind, lang]);
 
   // Micro-billing hook: log the impression and bill the campaign once the receipt (and its ad) is on screen.
   const receipt = state.kind === "ready" ? state.receipt : null;

@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
 import { formatEAT } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 
-type Role = "WAITER" | "CASHIER";
+type Role = "WAITER" | "CASHIER" | "MANAGER";
 type Status = "INVITED" | "ACTIVE" | "EXPIRED";
 
 interface Member {
@@ -146,8 +146,8 @@ export function TeamTab({ merchant }: { merchant: Merchant }) {
       <form onSubmit={add} className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-4">
         <h3 className="font-semibold">{t("team.add")}</h3>
 
-        <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label={t("crew.role")}>
-          {(["WAITER", "CASHIER"] as const).map((r) => (
+        <div className="grid gap-2 sm:grid-cols-3" role="radiogroup" aria-label={t("crew.role")}>
+          {(["WAITER", "CASHIER", "MANAGER"] as const).map((r) => (
             <button
               key={r}
               type="button"

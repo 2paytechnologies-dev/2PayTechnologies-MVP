@@ -12,10 +12,11 @@ Work top to bottom. Each section says what turning it on does, so nothing is swi
    contacts (kept apart from the public sales table), staff, refund requests, audit log, rate limiting, error log and routing history.
 6. `supabase/v2_2.sql` : **V2.2 (team members and tips). Run this BEFORE pushing the V2.2 code.** Adds team numbers, activation links (stored as hashes), phone binding, a waiter id and a tip amount on every sale. `/api/health` reports `"schema":"outdated"` and names this file until it has run.
 7. `supabase/v2_3.sql` : **V2.3 (settlement vault and routing hub). Run this BEFORE pushing the V2.3 code.** Adds the owner step-up purpose, a tamper-evident log of every change to the receiving accounts, and the customer's chosen app on each sale.
-8. **Deploy this release**, then `supabase/lockdown_reads.sql`. (If you ever re-run `all_migrations.sql` on a live system, run the lockdown again afterwards.) It removes all browser access to your data with the public key and
+8. `supabase/v2_4.sql` : **V2.4 (security vault, managers, national ID, encryption). Run this BEFORE pushing the V2.4 code.** Adds the MANAGER role, the security-key and lock columns, the national ID (Fayda) columns, and the last-four column on the settlement log.
+9. **Deploy this release**, then `supabase/lockdown_reads.sql`. (If you ever re-run `all_migrations.sql` on a live system, run the lockdown again afterwards.) It removes all browser access to your data with the public key and
    makes "mark a sale paid" server-only. **Do not run it before deploying**: older pages read the database directly and would break.
 
-(`supabase/all_migrations.sql` bundles steps 1-7, without the lockdown.)
+(`supabase/all_migrations.sql` bundles steps 1-8, without the lockdown.)
 
 ## 2. Environment variables (Vercel, then redeploy)
 
@@ -35,6 +36,12 @@ Work top to bottom. Each section says what turning it on does, so nothing is swi
 | `STATIC_QR_MAX_ETB` | cap for amounts typed on a shop QR page (default 20000) |
 | `RETENTION_PURGE_DAYS` | turns on the daily deletion of old unpaid links and payer phone numbers; leave unset until counsel agrees the period |
 | `RAIL_APP_LINKS` (object form), `ETHQR_TEMPLATE` | open the customer's own app, pre-filled (formats come from each bank/wallet and EthSwitch; see `docs/VAULT_NODE_HUB.md`) |
+| `DATA_ENCRYPTION_KEY` | **V2.4.** 32 random bytes, base64 (`openssl rand -base64 32`). Turns on AES-256-GCM encryption of account numbers, TINs and national-ID names in the database. Keep a copy in a password manager: without it those fields cannot be read. Once set, never remove it. |
+| `DATA_ENCRYPTION_KEY_PREV` | only while rotating: put the old key here, set a new `DATA_ENCRYPTION_KEY`, and rows are re-sealed under the new key as they are saved |
+| `FAYDA_ISSUER`, `FAYDA_CLIENT_ID`, `FAYDA_PRIVATE_JWK` | national ID (Fayda) sign-in. Supplied by the National ID Program when your organisation is onboarded; see `docs/SECURITY_V2_4.md` |
+| `FAYDA_REDIRECT_URI`, `FAYDA_SCOPES`, `FAYDA_ACR_VALUES` | optional Fayda settings (default redirect is `PUBLIC_BASE_URL/api/fayda/callback`) |
+| `KYC_REQUIRE_FAYDA=true` | in live mode an owner must have verified their national ID before payments are taken. Leave unset until Fayda is connected |
+| `ETS_BANK_CODES` | the EthSwitch bank codes used by "transfer to other bank" links, e.g. `{"Awash Bank":"<code>"}`. Supplied by EthSwitch |
 | `ALLOW_BROWSER_NODES` | leave unset: waiters must use the Android app (set `true` only for testing) |
 | `NEXT_PUBLIC_LEGAL_CONTACT` | contact shown on the Terms and Privacy pages |
 
@@ -49,6 +56,9 @@ Receipts by SMS and one-time codes both use `SMS_WEBHOOK_URL`. Without it, recei
 - [ ] SMS gateway delivers a code to a real phone; one merchant registered and signed in with `AUTH_ENFORCED=true`.
 - [ ] **Team nodes:** add a waiter, open the activation link on a second phone, confirm the code, take a sale, pay it with a 10 % tip, and check the cashier's feed names the waiter and shows the tip, the waiter's own ledger shows only theirs, and the owner's Team tab shows revenue and tips per person. Then remove the waiter and confirm their phone can no longer start a sale. See `docs/TEAM_NODE_TIPS.md`.
 - [ ] **Settlement vault:** with sign-in enforced, remove or switch a receiving account as the owner: the app asks for a code, the code arrives ONLY on the registered owner phone, the change goes through, and an SMS tells the owner. A cashier or waiter cannot even request the code.
+- [ ] **Security key + manager (V2.4):** as the owner, set a 6-digit security key (Settings > Receiving accounts); add or remove an account: the app asks for the key AND a code that arrives on the owner's phone. Add a manager (Team tab), have them set their own key, and confirm they can make the same change with their own key and phone, and that a cashier and a waiter cannot. Enter the wrong key 5 times and confirm the 15-minute lock and the SMS to the owner.
+- [ ] **Encryption (V2.4):** `DATA_ENCRYPTION_KEY` is set and backed up. Re-save each existing merchant's receiving accounts and business details once (rows saved before the key was set stay readable but unencrypted until they are saved again). Spot-check in Supabase that `saved_banks` shows `enc:v1:...` for the account number.
+- [ ] **Forgotten security key:** decide who at 2Pay can reset a key after identity checks (there is deliberately no self-service reset that bypasses the owner's phone).
 - [ ] **Waiter app:** install the APK on a real phone, open a waiter's link from SMS / WhatsApp: it opens inside the app, activates, and the phone can tap to pay. Opening the same kind of link in a browser must send the waiter to the app, not activate them.
 - [ ] `https://<site>/.well-known/assetlinks.json` loads (it makes https links open in the app).
 - [ ] An admin phone can open `/dashboard/admin`; a normal merchant is redirected away; one merchant cannot read another's
@@ -83,8 +93,8 @@ Receipts by SMS and one-time codes both use `SMS_WEBHOOK_URL`. Without it, recei
 - Refunds are a request-and-approve workflow with an audit trail; the money is returned through your provider, not by 2Pay.
 - The EMVCo QR encoder is groundwork: it needs the national scheme's merchant template and is not wired to settlement.
 - Rate limiting is database-backed and covers sign-in, payment and shop-QR routes; add an edge/WAF layer before a large public launch.
-- The enforced Content-Security-Policy still allows inline scripts that Next.js needs; a stricter nonce-based policy is running in
-  report-only mode so you can see violations before tightening.
+- The enforced Content-Security-Policy blocks every other site but still allows inline scripts that Next.js needs; a nonce-based policy
+  that removes `unsafe-inline` is the next hardening step.
 - Nine build-time dependency advisories remain (Tailwind/PostCSS chains). They do not run in production; fixing them means a
   major upgrade of Next.js and Tailwind, which should be its own change.
 - No iPhone merchant app, App Clip, USSD or push notifications yet: each needs an outside party (see `docs/ROADMAP_V2_1.md`).

@@ -7,5 +7,5 @@ export const BRAND_GREEN = "#00C896"; // logo green
 export const APP_BG = "#020617"; // app screen background
 
 /** Current release. Keep in step with android/app/build.gradle (versionName) and public/downloads/latest.json. */
-export const APP_VERSION = "2.3.0";
-export const APP_VERSION_CODE = 14;
+export const APP_VERSION = "2.4.0";
+export const APP_VERSION_CODE = 15;

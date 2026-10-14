@@ -38,7 +38,7 @@ export function codeMatches(expectedHex: string, actualHex: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export async function attachSession(res: NextResponse, merchantId: string, phone: string, secret: string, role: "OWNER" | "CASHIER" | "WAITER" = "OWNER", staffId?: string) {
+export async function attachSession(res: NextResponse, merchantId: string, phone: string, secret: string, role: "OWNER" | "CASHIER" | "WAITER" | "MANAGER" = "OWNER", staffId?: string) {
   const token = await signSession({ mid: merchantId, ph: phone, rl: role, ...(staffId ? { sid: staffId } : {}), exp: Math.floor(Date.now() / 1000) + SESSION_TTL_S }, secret);
   res.cookies.set(SESSION_COOKIE, token, {
     httpOnly: true,

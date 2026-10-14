@@ -2,12 +2,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { BadgeCheck, Clock, Download, FileWarning, Loader2, LogOut, ShieldQuestion } from "lucide-react";
+import { BadgeCheck, Clock, Download, FileWarning, Fingerprint, Loader2, LogOut, ShieldQuestion } from "lucide-react";
 import type { Merchant } from "@/lib/types";
 import type { KycStatus } from "@/lib/kyc";
 import { nativeInfo } from "@/lib/native";
 import { APP_VERSION } from "@/lib/brand";
-import { useT, type Key } from "@/lib/i18n";
+import { useI18n, useT, type Key } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 interface Profile {
@@ -20,6 +20,8 @@ interface Profile {
   kyc_status: KycStatus;
   kyc_note: string | null;
   sms_receipts: boolean;
+  fayda_verified_at: string | null;
+  fayda: { configured: boolean; required: boolean; name: string | null };
 }
 
 const STATUS_STYLE: Record<KycStatus, { cls: string; Icon: typeof BadgeCheck }> = {
@@ -31,7 +33,10 @@ const STATUS_STYLE: Record<KycStatus, { cls: string; Icon: typeof BadgeCheck }> 
 
 export function ProfileTab({ merchant, signedIn, onSignOut }: { merchant: Merchant; signedIn: boolean; onSignOut: () => void }) {
   const t = useT();
+  const { lang } = useI18n();
   const [p, setP] = useState<Profile | null>(null);
+  const [faydaBusy, setFaydaBusy] = useState(false);
+  const [faydaNote, setFaydaNote] = useState<{ ok: boolean; text: string } | null>(null);
   const [form, setForm] = useState({ legal_name: "", tin: "", business_license: "", address: "", location: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,6 +77,26 @@ export function ProfileTab({ merchant, signedIn, onSignOut }: { merchant: Mercha
       setError((err as Error).message);
     } finally {
       setBusy(false);
+    }
+  };
+
+  // Back from the national ID provider: ?fayda=ok | error | cancelled.
+  useEffect(() => {
+    const r = new URLSearchParams(window.location.search).get("fayda");
+    if (r === "ok" || r === "error" || r === "cancelled") setFaydaNote({ ok: r === "ok", text: t(`fayda.${r}` as Key) });
+  }, [t]);
+
+  const startFayda = async () => {
+    setFaydaBusy(true);
+    setFaydaNote(null);
+    try {
+      const r = await fetch(`/api/merchants/${merchant.id}/fayda/start`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ lang }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.code === "FAYDA_NOT_CONFIGURED" ? t("fayda.notConfigured") : (d.error ?? t("common.errorGeneric")));
+      window.location.assign(d.url);
+    } catch (e) {
+      setFaydaNote({ ok: false, text: (e as Error).message });
+      setFaydaBusy(false);
     }
   };
 
@@ -127,6 +152,28 @@ export function ProfileTab({ merchant, signedIn, onSignOut }: { merchant: Mercha
               {busy && <Loader2 className="h-4 w-4 animate-spin" />} {t("profile.submit")}
             </button>
           </form>
+        )}
+      </section>
+
+      <section className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="flex items-center gap-2 font-semibold">
+            <Fingerprint className="h-4 w-4 text-brand" /> {t("fayda.title")}
+          </h3>
+          {p?.fayda_verified_at && (
+            <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-200">
+              <BadgeCheck className="h-3.5 w-3.5" /> {p.fayda.name ? t("fayda.verified", { name: p.fayda.name }) : t("fayda.verifiedPlain")}
+            </span>
+          )}
+        </div>
+        <p className="text-sm text-slate-400">{t("fayda.body")}</p>
+        {p?.fayda.required && !p.fayda_verified_at && <p className="text-xs text-amber-300">{t("fayda.required")}</p>}
+        {p && !p.fayda.configured && <p className="rounded-lg bg-slate-800 p-3 text-xs text-slate-300">{t("fayda.notConfigured")}</p>}
+        {faydaNote && <p className={cn("rounded-lg p-3 text-sm", faydaNote.ok ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300")}>{faydaNote.text}</p>}
+        {!p?.fayda_verified_at && (
+          <button onClick={startFayda} disabled={faydaBusy || !p?.fayda.configured} className="inline-flex h-12 items-center gap-2 rounded-xl bg-brand px-5 font-bold text-slate-950 disabled:opacity-50">
+            {faydaBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Fingerprint className="h-4 w-4" />} {t("fayda.cta")}
+          </button>
         )}
       </section>
 

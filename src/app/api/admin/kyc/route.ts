@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { AdminConfigError, getAdminClient } from "@/lib/supabase-admin";
 import { requireAdmin } from "@/lib/guard";
+import { tryOpenField } from "@/lib/fieldcrypt";
 
 export const dynamic = "force-dynamic";
 
@@ -18,7 +19,8 @@ export async function GET(req: Request) {
       .order("kyc_submitted_at", { ascending: true, nullsFirst: false })
       .limit(200);
     if (error) return NextResponse.json({ error: "Could not load verifications" }, { status: 500 });
-    return NextResponse.json(data ?? [], { headers: { "Cache-Control": "no-store" } });
+    // The TIN is stored encrypted; an admin who must check it sees it here, decrypted on the server for this one answer.
+    return NextResponse.json((data ?? []).map((r) => ({ ...r, tin: tryOpenField(r.tin as string | null, "tin") })), { headers: { "Cache-Control": "private, no-store" } });
   } catch (e) {
     if (e instanceof AdminConfigError) return NextResponse.json({ error: "Server misconfigured" }, { status: 500 });
     throw e;

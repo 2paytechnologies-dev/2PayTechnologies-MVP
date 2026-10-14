@@ -9,26 +9,43 @@ export async function loadSettlement(merchantId: string): Promise<SettlementView
   return data as SettlementView;
 }
 
-/** The server wants the owner's one-time code before it changes where money goes (see the settlement vault). */
+/** The server wants the approver's security key and phone code (or the key is not set up yet) before it changes where money goes. */
 export class StepUpRequiredError extends Error {
   constructor() {
     super("step-up required");
   }
 }
 
-export async function requestStepUp(merchantId: string): Promise<{ challengeId: string; phoneMasked: string; devCode?: string }> {
-  const res = await fetch(`/api/merchants/${merchantId}/settlement/step-up/request`, { method: "POST" });
-  const d = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(d.error ?? "request");
-  return { challengeId: d.challenge_id, phoneMasked: d.phone_masked, devCode: d.dev_code };
+export interface VaultStatus {
+  approver: "OWNER" | "MANAGER";
+  has_phone: boolean;
+  has_pin: boolean;
+  phone_masked: string | null;
+  locked_minutes: number;
 }
 
-export async function verifyStepUp(merchantId: string, challengeId: string, code: string): Promise<void> {
-  const res = await fetch(`/api/merchants/${merchantId}/settlement/step-up/verify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ challenge_id: challengeId, code }) });
+async function call<T>(merchantId: string, path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`/api/merchants/${merchantId}/settlement/${path}`, {
+    method: body === undefined ? "GET" : "POST",
+    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    cache: "no-store",
+  });
   const d = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(d.error ?? "verify");
+  if (!res.ok) throw Object.assign(new Error(d.error ?? "request"), { code: d.code as string | undefined, minutes: d.minutes as number | undefined });
+  return d as T;
 }
 
+export type Challenge = { challenge_id: string; phone_masked: string; dev_code?: string };
+
+export const vaultStatus = (m: string) => call<VaultStatus>(m, "vault");
+/** Step 1 of unlocking: the security key. Only a right key makes the server send the code. */
+export const unlockRequest = (m: string, pin: string) => call<Challenge>(m, "step-up/request", { pin });
+/** Step 2: the code from the phone. Opens the vault for a few minutes. */
+export const unlockVerify = (m: string, challengeId: string, code: string) => call<{ ok: true }>(m, "step-up/verify", { challenge_id: challengeId, code });
+/** First time: send a code (to the given phone if the business has none yet), then choose the key with that code. */
+export const enrollRequest = (m: string, phone?: string) => call<Challenge>(m, "vault/enroll/request", phone ? { phone } : {});
+export const enrollVerify = (m: string, challengeId: string, code: string, pin: string, phone?: string) => call<{ ok: true }>(m, "vault/enroll/verify", { challenge_id: challengeId, code, pin, ...(phone ? { phone } : {}) });
 async function save(merchantId: string, input: SettlementInput): Promise<SettlementView> {
   const res = await fetch(`/api/merchants/${merchantId}/settlement`, {
     method: "PUT",
@@ -36,7 +53,7 @@ async function save(merchantId: string, input: SettlementInput): Promise<Settlem
     body: JSON.stringify(input),
   });
   const data = await res.json().catch(() => ({}));
-  if (res.status === 403 && data.code === "STEP_UP_REQUIRED") throw new StepUpRequiredError();
+  if (res.status === 403 && (data.code === "STEP_UP_REQUIRED" || data.code === "VAULT_SETUP_REQUIRED")) throw new StepUpRequiredError();
   if (!res.ok) throw new Error(data.error ?? "save");
   return data as SettlementView;
 }

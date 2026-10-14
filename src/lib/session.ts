@@ -9,7 +9,7 @@ export interface SessionPayload {
   /** merchant id */ mid: string;
   /** verified phone, +251… */ ph: string;
   /** expiry, unix seconds */ exp: number;
-  /** OWNER (the merchant's own phone), CASHIER or WAITER (team members). Sessions issued before V2.1 have none and are treated as OWNER. */ rl?: "OWNER" | "CASHIER" | "WAITER";
+  /** OWNER (the merchant's own phone), CASHIER or WAITER (team members). Sessions issued before V2.1 have none and are treated as OWNER. */ rl?: "OWNER" | "CASHIER" | "WAITER" | "MANAGER";
   /** team member id (merchant_staff.id) for CASHIER / WAITER sessions: every sale they key is stamped with it. Never taken from a request. */ sid?: string;
 }
 

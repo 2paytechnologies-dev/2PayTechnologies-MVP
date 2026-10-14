@@ -35,6 +35,7 @@ jobs:
       - run: npm ci
       - name: Start the stand-in database and the app
         run: |
+          export FAYDA_PRIVATE_JWK="$(cat tests/e2e/fayda-client.jwk.json)"
           node tests/e2e/mock-postgrest.mjs &
           npx next dev -p 3170 &
           for i in $(seq 1 60); do curl -fs http://localhost:3170/api/health >/dev/null && break; sleep 2; done
@@ -50,6 +51,11 @@ jobs:
           SMS_WEBHOOK_URL: http://localhost:4030
           CRON_SECRET: cron-secret-for-tests
           KYC_REQUIRED_FOR_LIVE: "true"
+          # V2.4: a TEST encryption key, and the pretend national ID provider that the tests start on port 4040 (TEST key pair)
+          DATA_ENCRYPTION_KEY: sUZyu4eR6emKWbHKI5O1YGPURWjcZtmsU0VHVXVHik0=
+          FAYDA_ISSUER: http://localhost:4040
+          FAYDA_CLIENT_ID: 2pay-e2e
+          FAYDA_ALLOW_INSECURE: "true"
       - run: node --experimental-transform-types --no-warnings tests/e2e/e2e.mjs
 
   android:

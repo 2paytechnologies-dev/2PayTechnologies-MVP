@@ -31,12 +31,31 @@ const FAMILY: Record<string, string> = {
 export const familyOf = (name: string): string => FAMILY[name] ?? name;
 
 export type RouteReason = "same-institution" | "same-kind" | "only-option";
+
+/**
+ * What the customer's app has to do to send the money, which decides which screen of that app we open:
+ *  - internal : the customer's institution IS the merchant's (or its family): the app's own "transfer within the bank/wallet".
+ *  - interbank: the merchant's account is at a DIFFERENT bank: the app's "transfer to other banks" screen (the EthSwitch
+ *               interbank transfer every bank app has), with the merchant's bank selected and the account filled in.
+ *  - wallet   : the merchant's account is a different wallet: the app's "send to wallet / phone number" screen.
+ */
+export type Transfer = "internal" | "interbank" | "wallet";
+
 export interface Route {
   method: PayerKind;
   /** The merchant's account that receives this payment. */
   institution: string;
   reason: RouteReason;
+  transfer: Transfer;
 }
+
+/** Which transfer screen the customer's app needs for this merchant account. */
+export function transferFor(app: PayerApp | null, merchantInstitution: string, merchantKind: PayerKind): Transfer {
+  if (app && familyOf(app.name) === familyOf(merchantInstitution)) return "internal";
+  return merchantKind === "bank" ? "interbank" : "wallet";
+}
+
+const route = (app: PayerApp | null, method: PayerKind, institution: string, reason: RouteReason): Route => ({ method, institution, reason, transfer: transferFor(app, institution, method) });
 
 /**
  * Which of the merchant's active accounts should receive a payment from this customer app?
@@ -48,11 +67,11 @@ export interface Route {
 export function chooseRoute(app: PayerApp | null, merchant: { bank: string | null; wallet: string | null }): Route | null {
   const { bank, wallet } = merchant;
   if (!bank && !wallet) return null;
-  if (bank && !wallet) return { method: "bank", institution: bank, reason: "only-option" };
-  if (wallet && !bank) return { method: "wallet", institution: wallet, reason: "only-option" };
-  if (!app) return { method: "wallet", institution: wallet!, reason: "only-option" };
+  if (bank && !wallet) return route(app, "bank", bank, "only-option");
+  if (wallet && !bank) return route(app, "wallet", wallet, "only-option");
+  if (!app) return route(app, "wallet", wallet!, "only-option");
   const mine = familyOf(app.name);
-  if (familyOf(bank!) === mine) return { method: "bank", institution: bank!, reason: "same-institution" };
-  if (familyOf(wallet!) === mine) return { method: "wallet", institution: wallet!, reason: "same-institution" };
-  return app.kind === "wallet" ? { method: "wallet", institution: wallet!, reason: "same-kind" } : { method: "bank", institution: bank!, reason: "same-kind" };
+  if (familyOf(bank!) === mine) return route(app, "bank", bank!, "same-institution");
+  if (familyOf(wallet!) === mine) return route(app, "wallet", wallet!, "same-institution");
+  return app.kind === "wallet" ? route(app, "wallet", wallet!, "same-kind") : route(app, "bank", bank!, "same-kind");
 }

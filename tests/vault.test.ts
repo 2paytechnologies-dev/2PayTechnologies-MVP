@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { classifyChange, signStepUp, verifyStepUp, STEP_UP_TTL_S, type Snapshot } from "@/lib/settlement-security";
+import { classifyChange, needsStepUp, signStepUp, verifyStepUp, STEP_UP_TTL_S, type Snapshot } from "@/lib/settlement-security";
+import { LOCK_MINUTES, MAX_FAILED, PIN_RE, afterWrongPin, hashPin, isLocked, isWeakPin, minutesLeft, verifyPin } from "@/lib/vault";
 import { ALL_PAYER_APPS, POPULAR_PAYER_APPS, chooseRoute, findPayerApp } from "@/lib/routing-hub";
 import { fillTemplate, needsPayload, platformOf, resolveAppLink, usableTemplate } from "@/lib/applinks";
 import { buildEthQr, parseTemplate } from "@/lib/ethqr";
@@ -13,71 +14,118 @@ const wallet = acct("w1", "Telebirr", "+251911223344");
 const empty: Snapshot = { saved_banks: [], saved_wallets: [], active_bank: null, active_wallet: null };
 const full: Snapshot = { saved_banks: [bank], saved_wallets: [wallet], active_bank: bank, active_wallet: wallet };
 
-describe("settlement vault: what needs the owner's code", () => {
-  it("the very first setup is free: there is nothing yet to divert", () => {
-    expect(classifyChange(empty, { saved_banks: [bank], saved_wallets: [], active_bank: bank, active_wallet: null })).toBe("SETUP");
-    expect(classifyChange(empty, full)).toBe("SETUP");
-  });
-
-  it("no change is no change", () => {
+describe("settlement vault: what needs the key and the code", () => {
+  it("nothing changed means nothing is asked", () => {
     expect(classifyChange(full, full)).toBe("NONE");
+    expect(needsStepUp("NONE")).toBe(false);
   });
 
-  it("removing an account needs the code", () => {
+  it("even the very first account needs the key and the code (so a stranger cannot attach their own account)", () => {
+    const k = classifyChange(empty, { saved_banks: [bank], saved_wallets: [], active_bank: bank, active_wallet: null });
+    expect(k).toBe("SETUP");
+    expect(needsStepUp(k)).toBe(true);
+  });
+
+  it("adding an account needs them, even one that is not switched on", () => {
+    const other = acct("b2", "Dashen Bank");
+    const k = classifyChange(full, { ...full, saved_banks: [bank, other] });
+    expect(k).toBe("SENSITIVE");
+    expect(needsStepUp(k)).toBe(true);
+  });
+
+  it("removing an account needs them", () => {
     expect(classifyChange(full, { ...full, saved_wallets: [], active_wallet: null })).toBe("SENSITIVE");
     expect(classifyChange(full, { ...full, saved_banks: [], active_bank: null })).toBe("SENSITIVE");
   });
 
-  it("editing an account's number or bank needs the code (same id, different destination)", () => {
+  it("editing an account's number or bank needs them (same id, different destination)", () => {
     const edited = { ...bank, account_number: "1000999999999" };
     expect(classifyChange(full, { ...full, saved_banks: [edited], active_bank: edited })).toBe("SENSITIVE");
     const moved = { ...bank, institution: "Dashen Bank" };
     expect(classifyChange(full, { ...full, saved_banks: [moved], active_bank: moved })).toBe("SENSITIVE");
   });
 
-  it("switching which account receives money needs the code", () => {
+  it("switching which account receives money needs them", () => {
     const other = acct("b2", "Dashen Bank");
     const both = { ...full, saved_banks: [bank, other] };
-    expect(classifyChange(full, both)).toBe("NONE"); // adding an extra, unused account moves nothing
     expect(classifyChange(both, { ...both, active_bank: other })).toBe("SENSITIVE");
   });
 
-  it("adding a second kind when money already flows somewhere changes routing, so it needs the code", () => {
+  it("adding a second kind while money already flows somewhere needs them", () => {
     const onlyBank: Snapshot = { saved_banks: [bank], saved_wallets: [], active_bank: bank, active_wallet: null };
-    expect(classifyChange(onlyBank, full)).toBe("SENSITIVE"); // the new wallet becomes active: part of the money now goes there
-    expect(classifyChange(onlyBank, { ...full, active_wallet: null })).toBe("NONE");
+    expect(classifyChange(onlyBank, full)).toBe("SENSITIVE");
   });
 });
 
 describe("the step-up pass", () => {
   const secret = "s".repeat(40);
   const now = Date.parse("2026-10-13T10:00:00Z");
+  const PH = "+251911000001";
 
-  it("accepts a fresh pass for the same business and phone", () => {
-    const p = signStepUp("m1", "+251911000001", secret, now);
-    expect(verifyStepUp(p, "m1", "+251911000001", secret, now + 1000)).toBe(true);
+  it("accepts a fresh pass for the same business, approver and phone", () => {
+    const p = signStepUp("m1", "a1", PH, secret, now);
+    expect(verifyStepUp(p, "m1", "a1", PH, secret, now + 1000)).toBe(true);
   });
 
-  it("expires after five minutes", () => {
-    const p = signStepUp("m1", "+251911000001", secret, now);
-    expect(STEP_UP_TTL_S).toBe(300);
-    expect(verifyStepUp(p, "m1", "+251911000001", secret, now + 301_000)).toBe(false);
+  it("expires after three minutes", () => {
+    const p = signStepUp("m1", "a1", PH, secret, now);
+    expect(STEP_UP_TTL_S).toBe(180);
+    expect(verifyStepUp(p, "m1", "a1", PH, secret, now + 181_000)).toBe(false);
   });
 
-  it("is useless for another business, another phone, another secret, or when tampered with", () => {
-    const p = signStepUp("m1", "+251911000001", secret, now);
-    expect(verifyStepUp(p, "m2", "+251911000001", secret, now)).toBe(false);
-    expect(verifyStepUp(p, "m1", "+251911000002", secret, now)).toBe(false);
-    expect(verifyStepUp(p, "m1", "+251911000001", "t".repeat(40), now)).toBe(false);
+  it("is useless for another business, another approver (owner vs manager), another phone, another secret, or when tampered with", () => {
+    const p = signStepUp("m1", "a1", PH, secret, now);
+    expect(verifyStepUp(p, "m2", "a1", PH, secret, now)).toBe(false);
+    expect(verifyStepUp(p, "m1", "a2", PH, secret, now)).toBe(false);
+    expect(verifyStepUp(p, "m1", "a1", "+251911000002", secret, now)).toBe(false);
+    expect(verifyStepUp(p, "m1", "a1", PH, "t".repeat(40), now)).toBe(false);
     const [body, sig] = p.split(".");
-    const forged = Buffer.from(JSON.stringify({ k: "stepup", mid: "m1", ph: "+251911000001", exp: 9_999_999_999 })).toString("base64url");
-    expect(verifyStepUp(`${forged}.${sig}`, "m1", "+251911000001", secret, now)).toBe(false);
-    expect(verifyStepUp(`${body}.x`, "m1", "+251911000001", secret, now)).toBe(false);
-    expect(verifyStepUp(undefined, "m1", "+251911000001", secret, now)).toBe(false);
-    expect(verifyStepUp(p, "m1", "+251911000001", undefined, now)).toBe(false);
+    const forged = Buffer.from(JSON.stringify({ k: "stepup", mid: "m1", aid: "a1", ph: PH, exp: 9_999_999_999 })).toString("base64url");
+    expect(verifyStepUp(`${forged}.${sig}`, "m1", "a1", PH, secret, now)).toBe(false);
+    expect(verifyStepUp(`${body}.x`, "m1", "a1", PH, secret, now)).toBe(false);
+    expect(verifyStepUp(undefined, "m1", "a1", PH, secret, now)).toBe(false);
+    expect(verifyStepUp(p, "m1", "a1", PH, undefined, now)).toBe(false);
   });
 });
 
+describe("the security key", () => {
+  it("is 6 digits and the obvious ones are refused", () => {
+    expect(PIN_RE.test("483920")).toBe(true);
+    for (const bad of ["12345", "1234567", "abcdef", "12 456", ""]) expect(PIN_RE.test(bad)).toBe(false);
+    for (const weak of ["000000", "111111", "123456", "654321", "121212"]) expect(isWeakPin(weak)).toBe(true);
+    expect(isWeakPin("483920")).toBe(false);
+  });
+
+  it("is stored only as a salted memory-hard hash, and checks right and wrong keys", async () => {
+    const h = await hashPin("483920");
+    expect(h).toMatch(/^scrypt\$16384\$/);
+    expect(h).not.toContain("483920");
+    expect(await hashPin("483920")).not.toBe(h); // a fresh salt each time
+    expect(await verifyPin("483920", h)).toBe(true);
+    expect(await verifyPin("483921", h)).toBe(false);
+    expect(await verifyPin("48392", h)).toBe(false);
+    expect(await verifyPin("483920", null)).toBe(false);
+    expect(await verifyPin("483920", "scrypt$1$a$b")).toBe(false); // wrong parameters
+    expect(await verifyPin("483920", "garbage")).toBe(false);
+  });
+
+  it("locks after five wrong keys, for fifteen minutes", () => {
+    const now = Date.parse("2026-10-13T10:00:00Z");
+    let s = { failed: 0, lockedUntil: null as string | null };
+    for (let i = 1; i < MAX_FAILED; i++) {
+      s = afterWrongPin(s, now);
+      expect(isLocked(s, now)).toBe(false);
+      expect(s.failed).toBe(i);
+    }
+    s = afterWrongPin(s, now); // the fifth
+    expect(isLocked(s, now)).toBe(true);
+    expect(s.failed).toBe(0);
+    expect(LOCK_MINUTES).toBe(15);
+    expect(minutesLeft(s, now)).toBe(15);
+    expect(isLocked(s, now + 14 * 60_000)).toBe(true);
+    expect(isLocked(s, now + 15 * 60_000 + 1)).toBe(false);
+  });
+});
 describe("customer routing hub", () => {
   const route = (appName: string | null, b: string | null, w: string | null) => chooseRoute(appName ? findPayerApp(appName) : null, { bank: b, wallet: w });
 

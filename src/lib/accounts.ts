@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 export interface AccountRef {
   merchantId: string;
-  role: "OWNER" | "CASHIER" | "WAITER";
+  role: "OWNER" | "CASHIER" | "WAITER" | "MANAGER";
   businessName: string;
   terminalId: string;
   /** merchant_staff.id for team members. */
@@ -28,5 +28,5 @@ export async function findAccountByPhone(admin: SupabaseClient, phone: string): 
   if (!staff) return null;
   const m = (Array.isArray(staff.merchants) ? staff.merchants[0] : staff.merchants) as { business_name: string; terminal_id: string } | null;
   if (!m) return null;
-  return { merchantId: staff.merchant_id, role: staff.role === "WAITER" ? "WAITER" : "CASHIER", businessName: m.business_name, terminalId: m.terminal_id, staffId: staff.id, deviceHash: staff.device_id_hash ?? null };
+  return { merchantId: staff.merchant_id, role: staff.role === "WAITER" ? "WAITER" : staff.role === "MANAGER" ? "MANAGER" : "CASHIER", businessName: m.business_name, terminalId: m.terminal_id, staffId: staff.id, deviceHash: staff.device_id_hash ?? null };
 }

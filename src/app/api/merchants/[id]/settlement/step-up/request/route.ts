@@ -1,67 +1,51 @@
 import { NextResponse } from "next/server";
-import { randomUUID } from "node:crypto";
 import { AdminConfigError, getAdminClient } from "@/lib/supabase-admin";
 import { requireMerchant } from "@/lib/guard";
-import { OTP_MAX_REQUESTS, OTP_REQUEST_WINDOW_S, OTP_TTL_S, hashCode, newCode, sessionSecret, testMode } from "@/lib/auth";
-import { sendStepUpSms, smsConfigured } from "@/lib/sms";
+import { sessionSecret } from "@/lib/auth";
 import { isUuid } from "@/lib/settlement";
-import { clientIp } from "@/lib/audit";
+import { audit, clientIp } from "@/lib/audit";
 import { rateLimit } from "@/lib/ratelimit";
+import { LOCK_MINUTES, MAX_FAILED, afterWrongPin, isLocked, maskPhone, minutesLeft, resolveApprover, verifyPin } from "@/lib/vault";
+import { bad, issueChallenge } from "@/lib/vault-server";
 
 export const dynamic = "force-dynamic";
 
-const bad = (error: string, status = 400) => NextResponse.json({ error }, { status });
-
 /**
- * Start a step-up check before the receiving account is changed. The code goes ONLY to the phone number registered on
- * the business: the request carries no phone number, so there is nothing an attacker can point it at. Owner only.
+ * Unlock the vault, step one: the approver's security key. Only a correct key makes us send the one-time code (so nobody can
+ * run up SMS costs or spam the owner's phone without it). Five wrong keys lock the vault for 15 minutes. The code goes
+ * ONLY to the approver's own registered phone; the request carries no phone number, so there is nothing to point it elsewhere.
  */
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   if (!isUuid(id)) return bad("Malformed merchant id");
-  const guard = await requireMerchant(id, { owner: true });
+  const guard = await requireMerchant(id, { vault: true });
   if (!guard.ok) return guard.res;
   const secret = sessionSecret();
   if (!secret) return bad("SESSION_SECRET (32+ characters) is not configured", 500);
-  if (!testMode() && !smsConfigured()) return bad("SMS delivery is not configured", 503);
+  const body = await req.json().catch(() => null);
+  const pin = typeof body?.pin === "string" ? body.pin : "";
 
   try {
     const admin = getAdminClient();
-    if (!(await rateLimit(admin, `stepup:ip:${clientIp(req)}`, 12, 600, { failClosed: true }))) return bad("Too many attempts. Try again in a few minutes.", 429);
+    if (!(await rateLimit(admin, `vault:ip:${clientIp(req)}`, 12, 600, { failClosed: true }))) return bad("Too many attempts. Try again in a few minutes.", 429);
+    const a = await resolveApprover(admin, id, guard.session);
+    if (!a) return bad("Only the owner or a manager can manage payment accounts", 403);
+    if (!a.phone || !a.hasPin) return bad("Set up your security key first.", 403, { code: "VAULT_SETUP_REQUIRED", need: !a.phone ? "phone" : "pin" });
+    if (isLocked(a.lock)) return bad(`Too many wrong keys. Try again in ${minutesLeft(a.lock)} minutes.`, 423, { code: "VAULT_LOCKED", minutes: minutesLeft(a.lock) });
 
-    const { data: m } = await admin.from("merchants").select("phone").eq("id", id).maybeSingle();
-    const phone = m?.phone as string | null | undefined;
-    if (!phone) return bad("This business has no registered phone number to send the code to.", 409);
-
-    const since = new Date(Date.now() - OTP_REQUEST_WINDOW_S * 1000).toISOString();
-    const { count } = await admin.from("otp_challenges").select("id", { count: "exact", head: true }).eq("phone", phone).eq("purpose", "stepup").gte("created_at", since);
-    if ((count ?? 0) >= OTP_MAX_REQUESTS) return bad("Too many codes requested. Try again in a few minutes.", 429);
-
-    const challengeId = randomUUID();
-    const code = newCode();
-    const { error } = await admin.from("otp_challenges").insert({
-      id: challengeId,
-      phone,
-      purpose: "stepup",
-      code_hash: hashCode(secret, challengeId, phone, code),
-      expires_at: new Date(Date.now() + OTP_TTL_S * 1000).toISOString(),
-    });
-    if (error) {
-      console.error("[stepup request]", error.message);
-      return bad("Could not start the security check. Has the latest SQL in supabase/ been run?", 500);
+    const { data: row } = await admin.from(a.table).select("vault_pin_hash").eq("id", a.id).maybeSingle();
+    if (!(await verifyPin(pin, row?.vault_pin_hash))) {
+      const next = afterWrongPin(a.lock);
+      await admin.from(a.table).update({ vault_failed: next.failed, vault_locked_until: next.lockedUntil }).eq("id", a.id);
+      await audit(admin, guard.session, req, { action: next.lockedUntil ? "vault.locked" : "vault.key.wrong", targetType: a.table === "merchants" ? "merchant" : "staff", targetId: a.id, merchantId: id, details: { approver: a.kind } });
+      if (next.lockedUntil) return bad(`Too many wrong keys. The vault is locked for ${LOCK_MINUTES} minutes.`, 423, { code: "VAULT_LOCKED", minutes: LOCK_MINUTES });
+      return bad(`Incorrect security key. ${MAX_FAILED - next.failed} tries left.`, 400, { code: "VAULT_WRONG_KEY" });
     }
-    const delivered = await sendStepUpSms(phone, code);
-    if (!delivered && !testMode()) {
-      await admin.from("otp_challenges").delete().eq("id", challengeId);
-      return bad("Could not send the SMS. Please try again.", 502);
-    }
-    return NextResponse.json({
-      challenge_id: challengeId,
-      phone_masked: `${phone.slice(0, 7)}•••${phone.slice(-2)}`,
-      expires_in: OTP_TTL_S,
-      delivered,
-      ...(testMode() ? { dev_code: code } : {}),
-    });
+    if (a.lock.failed) await admin.from(a.table).update({ vault_failed: 0, vault_locked_until: null }).eq("id", a.id);
+
+    const c = await issueChallenge(admin, a.phone, secret);
+    if (!c.ok) return c.res;
+    return NextResponse.json({ challenge_id: c.challengeId, phone_masked: maskPhone(a.phone), delivered: c.delivered, ...(c.devCode ? { dev_code: c.devCode } : {}) });
   } catch (e) {
     if (e instanceof AdminConfigError) return bad("Server misconfigured", 500);
     throw e;

@@ -46,7 +46,8 @@ class NativeBridge(private val activity: MainActivity) {
     /** JSON: { native, version, nfc: "READY" | "DISABLED" | "UNSUPPORTED", hce } */
     @JavascriptInterface
     fun info(): String {
-        warmUpSpeech() // the terminal asks for info as soon as it opens, so the voice is ready before the first sale
+        warmUpSpeech() // the terminal asks for info as soon as it opens, so the voice and the sounds are ready before the first sale
+        warmUpAudio()
         val hasHce = activity.packageManager.hasSystemFeature("android.hardware.nfc.hce")
         val nfc = adapter()
         val state = when {
@@ -189,86 +190,99 @@ class NativeBridge(private val activity: MainActivity) {
         }
     }
 
-    /**
-     * The settlement chime, played by the phone itself rather than by the page. The WebView's own audio can be held
-     * back (idle audio is suspended, autoplay rules), which made the chime late or silent. Two soft tones, about half a second.
-     */
-    @Volatile private var chiming = false
+    // ------------------------------------------------------------------ the sale sounds, ready BEFORE the sale
+    // The chime and the recorded Amharic word are built and kept ready when the terminal opens, so the moment a sale clears
+    // they only have to START. (Building an audio track or preparing a player at that moment cost 100 ms or more.)
+    private val audioLock = Any()
+    private var chimeTrack: AudioTrack? = null
+    private var amPlayer: MediaPlayer? = null
+    private var amReady = false
 
-    @JavascriptInterface
-    fun chime() {
-        if (chiming) return
-        chiming = true
+    /** The two soft tones, about half a second, as a ready-to-play static track. */
+    private fun buildChime(): AudioTrack? = try {
+        val rate = 44100
+        fun tone(freq: Double, ms: Int): ShortArray {
+            val n = rate * ms / 1000
+            return ShortArray(n) { i ->
+                val t = i.toDouble() / rate
+                val attack = minOf(1.0, i / (rate * 0.012))      // 12 ms fade-in: no click
+                val release = minOf(1.0, (n - i) / (rate * 0.12)) // gentle fade-out
+                (Math.sin(2 * Math.PI * freq * t) * CHIME_LEVEL * attack * release * Short.MAX_VALUE).toInt().toShort()
+            }
+        }
+        val data = tone(880.0, 170) + tone(1318.5, 330)
+        AudioTrack.Builder()
+            .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
+            .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(rate).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+            .setBufferSizeInBytes(data.size * 2)
+            .setTransferMode(AudioTrack.MODE_STATIC)
+            .build()
+            .also { it.write(data, 0, data.size) }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun buildAmharicPlayer(): MediaPlayer? = try {
+        val afd = activity.resources.openRawResourceFd(R.raw.paid_am)
+        MediaPlayer().apply {
+            setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
+            afd.close()
+            setVolume(1f, 1f)
+            setOnErrorListener { mp, _, _ -> synchronized(audioLock) { amReady = false; amPlayer = null }; mp.release(); true }
+            prepare() // on the worker thread; the file is 13 KB
+        }
+    } catch (_: Exception) {
+        null
+    }
+
+    private fun warmUpAudio() {
         Thread {
-            var track: AudioTrack? = null
-            try {
-                val rate = 44100
-                fun tone(freq: Double, ms: Int): ShortArray {
-                    val n = rate * ms / 1000
-                    return ShortArray(n) { i ->
-                        val t = i.toDouble() / rate
-                        val attack = minOf(1.0, i / (rate * 0.012))      // 12 ms fade-in: no click
-                        val release = minOf(1.0, (n - i) / (rate * 0.12)) // gentle fade-out
-                        (Math.sin(2 * Math.PI * freq * t) * CHIME_LEVEL * attack * release * Short.MAX_VALUE).toInt().toShort()
-                    }
+            synchronized(audioLock) {
+                if (chimeTrack == null) chimeTrack = buildChime()
+                if (amPlayer == null) {
+                    amPlayer = buildAmharicPlayer()
+                    amReady = amPlayer != null
                 }
-                val data = tone(880.0, 170) + tone(1318.5, 330)
-                track = AudioTrack.Builder()
-                    .setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                            .build(),
-                    )
-                    .setAudioFormat(
-                        AudioFormat.Builder()
-                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                            .setSampleRate(rate)
-                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                            .build(),
-                    )
-                    .setBufferSizeInBytes(data.size * 2)
-                    .setTransferMode(AudioTrack.MODE_STATIC)
-                    .build()
-                track.write(data, 0, data.size)
-                track.play()
-                Thread.sleep(600)
-            } catch (_: Exception) {
-            } finally {
-                try { track?.release() } catch (_: Exception) {}
-                chiming = false
             }
         }.start()
     }
 
-    /**
-     * Plays the recorded Amharic "ተከፍሏል" (res/raw/paid_am.mp3). Phones have no Amharic voice, so the word is a recording.
-     * Returns false if it could not be started, so the page can fall back.
-     */
+    /** The settlement chime, played by the phone itself (the WebView's own audio can be held back or delayed). Starts at once. */
     @JavascriptInterface
-    fun playPaidAmharic(): Boolean {
-        return try {
-            val afd = activity.resources.openRawResourceFd(R.raw.paid_am) ?: return false
-            val player = MediaPlayer()
-            player.setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                    .build(),
-            )
-            player.setDataSource(afd.fileDescriptor, afd.startOffset, afd.length)
-            afd.close()
-            player.setVolume(1f, 1f)
-            player.setOnCompletionListener { it.release() }
-            player.setOnErrorListener { mp, _, _ -> mp.release(); true }
-            player.setOnPreparedListener { it.start() }
-            player.prepareAsync()
-            true
+    fun chime() {
+        val track = synchronized(audioLock) { chimeTrack ?: buildChime().also { chimeTrack = it } } ?: return
+        try {
+            track.stop()
+            track.reloadStaticData() // rewind the ready-made sound
+            track.play()
         } catch (_: Exception) {
-            false
+            synchronized(audioLock) { chimeTrack = null } // rebuilt on the next call
+            warmUpAudio()
         }
     }
 
+    /**
+     * Plays the recorded Amharic "ተከፍሏል" (res/raw/paid_am.mp3). Phones have no Amharic voice, so the word is a recording.
+     * The player is prepared in advance, so this only starts it. Returns false if it could not, so the page can fall back.
+     */
+    @JavascriptInterface
+    fun playPaidAmharic(): Boolean {
+        val p = synchronized(audioLock) { if (amReady) amPlayer else null }
+        if (p == null) {
+            warmUpAudio()
+            return false
+        }
+        return try {
+            p.seekTo(0)
+            p.start()
+            true
+        } catch (_: Exception) {
+            synchronized(audioLock) { amReady = false; amPlayer = null }
+            warmUpAudio()
+            false
+        }
+    }
     @JavascriptInterface
     fun vibrate(ms: Int) {
         val v = activity.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator ?: return
@@ -309,6 +323,13 @@ class NativeBridge(private val activity: MainActivity) {
     }
 
     fun shutdown() {
+        synchronized(audioLock) {
+            try { chimeTrack?.release() } catch (_: Exception) {}
+            try { amPlayer?.release() } catch (_: Exception) {}
+            chimeTrack = null
+            amPlayer = null
+            amReady = false
+        }
         louder?.release()
         louder = null
         tts?.shutdown()

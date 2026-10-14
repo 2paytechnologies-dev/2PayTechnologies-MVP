@@ -58,7 +58,7 @@ export async function POST(req: Request) {
     if (!consumed) return bad("This code has already been used.");
 
     let merchant: { id: string; business_name: string; terminal_id: string } | null = null;
-    let role: "OWNER" | "CASHIER" | "WAITER" = "OWNER";
+    let role: "OWNER" | "CASHIER" | "WAITER" | "MANAGER" = "OWNER";
     let staffId: string | undefined;
 
     if (ch.purpose === "register") {
