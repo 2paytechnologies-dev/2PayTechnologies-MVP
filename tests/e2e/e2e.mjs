@@ -512,6 +512,59 @@ section("waiters work in the Android app");
   const wellKnown = await call("GET", "/.well-known/assetlinks.json", { raw: true });
   t("the app-link file is published so https links open in the app", wellKnown.status === 200 && wellKnown.data.includes("com.twopay.merchant") && /31:A6:AA:1A/.test(wellKnown.data));
 }
+section("instant payment detection: held requests answer when the sale changes");
+{
+  const s = await liveSale(ownerA, 55);
+  const H = { headers: { cookie: ownerA } };
+  const first = await fetch(BASE + `/api/transactions/status?tokens=${s.token}`, H);
+  const sig = first.headers.get("x-status-sig") ?? "";
+  t("the status answer carries a signature of the sale's state", first.status === 200 && sig.length > 10 && !!s.nonce);
+
+  // 1) the terminal's own sale: held for up to 6 s, answered right after the rail confirms
+  const day = `merchant_id=${A}&from=${new Date(Date.now() - 86400_000).toISOString()}&to=${new Date(Date.now() + 86400_000).toISOString()}`;
+  const feed0 = await fetch(BASE + `/api/transactions?${day}&limit=30`, { headers: { cookie: ownerA } });
+  const feedSig = feed0.headers.get("x-feed-sig") ?? "";
+  const heldStatus = fetch(BASE + `/api/transactions/status?tokens=${s.token}&wait=6&sig=${encodeURIComponent(sig)}`, H).then(async (r) => ({ rows: await r.json(), at: Date.now() }));
+  const heldFeed = fetch(BASE + `/api/transactions?${day}&limit=30&wait=6&sig=${encodeURIComponent(feedSig)}`, { headers: { cookie: ownerA } }).then(async (r) => ({ body: await r.json(), at: Date.now() }));
+  await wait(800);
+  const settledAt = Date.now();
+  await settle(s.nonce, 55);
+  const hs = await heldStatus;
+  const hf = await heldFeed;
+  t("the held status request answers right after the payment clears (about 0.2 s; the bound allows for a cold dev server)", hs.at - settledAt < 2500 && hs.at - settledAt >= 0, `${hs.at - settledAt} ms`);
+  t("...and says the sale is paid", hs.rows[0]?.status === "SETTLED");
+  t("the held sales feed also answers right after it clears", hf.at - settledAt < 2500, `${hf.at - settledAt} ms`);
+  t("...and lists the new sale as settled", hf.body.rows.some((r) => r.id === s.id && r.status === "SETTLED"));
+
+  // 2) nothing changes: the request is held, then answered with the same state
+  const curSig = (await fetch(BASE + `/api/transactions/status?tokens=${s.token}`, H)).headers.get("x-status-sig") ?? "";
+  const t0 = Date.now();
+  const idle = await fetch(BASE + `/api/transactions/status?tokens=${s.token}&wait=1&sig=${encodeURIComponent(curSig)}`, H);
+  const waited = Date.now() - t0;
+  t("with nothing new, the server holds the request for the wait time and no longer", idle.status === 200 && waited >= 900 && waited < 2500, `${waited} ms`);
+  t("a malformed wait is harmless", (await fetch(BASE + `/api/transactions/status?tokens=${s.token}&wait=banana`, H)).status === 200);
+  const t1 = Date.now();
+  const capped = await fetch(BASE + `/api/transactions/status?tokens=${s.token}&wait=9999&sig=${encodeURIComponent(curSig)}`, H);
+  t("the wait is capped (a huge number does not hold a connection for minutes)", capped.status === 200 && Date.now() - t1 < 9500, `${Date.now() - t1} ms`);
+}
+section("one-request bootstrap for the portal");
+{
+  const anon = await call("GET", "/api/portal");
+  t("an anonymous caller gets nothing when sign-in is enforced", anon.status === 401);
+  const own = await call("GET", "/api/portal", { ck: ownerA });
+  t("the owner gets session, own business and default in ONE answer", own.status === 200 && own.data.role === "OWNER" && own.data.defaultMerchantId === A && own.data.merchants.length === 1 && own.data.merchants[0].id === A && own.data.merchant?.id === A);
+  t("it names the active institutions but never an account number", own.status === 200 && own.data.merchants[0].routing && !JSON.stringify(own.data).includes("1000123456789") && !JSON.stringify(own.data).includes("911223344"));
+  t("it is never cached by a shared cache", /private/.test(own.headers.get("cache-control") ?? "") && /no-store/.test(own.headers.get("cache-control") ?? ""));
+  const adminP = await call("GET", "/api/portal", { ck: admin });
+  t("an admin sees every business", adminP.status === 200 && adminP.data.admin === true && adminP.data.merchants.length >= 2);
+  const w = await call("GET", "/api/portal", { ck: crew.w2ck });
+  t("a waiter's answer carries their name and team number", w.status === 200 && w.data.role === "WAITER" && w.data.staff?.name === "Birtukan" && !!w.data.staff?.team_no);
+  const me = await call("GET", "/api/auth/me", { ck: ownerA });
+  t("the session answer is private too", /private/.test(me.headers.get("cache-control") ?? ""));
+  t("every API answer is private by default", /private/.test((await call("GET", "/api/health")).headers.get("cache-control") ?? ""));
+  const asset = await call("GET", "/sounds/paid-am.mp3", { raw: true });
+  t("the recorded Amharic word is cached for a year", /max-age=31536000/.test(asset.headers.get("cache-control") ?? ""));
+}
 section("refund requests");
 {
   const txs = (await db()).transactions.filter((x) => x.status === "SETTLED" && x.merchant_id === A && Number(x.amount) === 25);

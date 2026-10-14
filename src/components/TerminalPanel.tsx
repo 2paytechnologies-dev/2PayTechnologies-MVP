@@ -1,12 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { QRCodeSVG } from "qrcode.react";
+import dynamic from "next/dynamic";
+
+// The QR library is only needed once a sale starts, so it is downloaded then (and warmed up when the terminal opens).
+const loadQr = () => import("qrcode.react").then((m) => m.QRCodeSVG);
+const QRCodeSVG = dynamic(loadQr, { ssr: false, loading: () => <div className="h-[240px] w-[240px] animate-pulse rounded-xl bg-slate-800" /> });
 import Link from "next/link";
 import { Check, CheckCircle2, Copy, Delete, Loader2, Nfc, QrCode, RefreshCw, RotateCcw, Route, ScanLine, TriangleAlert, Volume2 } from "lucide-react";
 import { isPaid, type Transaction } from "@/lib/types";
 import { primeAudio, keepAudioAlive, playSettlementChime, preloadAnnouncement } from "@/lib/chime";
 import { ShiftLedger } from "@/components/merchant/ShiftLedger";
+import { startLongPoll } from "@/lib/poll";
 import { clearPayLink, keepScreenAwake, nativeInfo, presentPayLink, type NativeInfo } from "@/lib/native";
 import { eatDateKey, eatDayStartISO, fmt } from "@/lib/format";
 import { useI18n, useT, type Key } from "@/lib/i18n";
@@ -40,7 +45,7 @@ interface Props {
   /** Called when the cashier taps the "no payment account yet" notice (owner only). */
   onNeedSetup?: () => void;
   /** Who is using this terminal. Team members see the shift ledger; a waiter sees only their own sales and tips. */
-  role?: "OWNER" | "CASHIER" | "WAITER";
+  role?: "OWNER" | "CASHIER" | "WAITER" | "MANAGER";
   /** The signed-in team member, shown at the top so a shared phone always says whose shift it is. */
   staff?: { name: string; team_no: string | null } | null;
 }
@@ -89,6 +94,8 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
   }, [lang]);
   useEffect(() => {
     preloadAnnouncement(); // fetch the recorded Amharic word now, so it is ready when the first sale clears
+    const warm = window.setTimeout(() => void loadQr().catch(() => {}), 1200); // QR code library, ready before the first charge
+    return () => clearTimeout(warm);
   }, []);
 
   useEffect(() => {
@@ -137,71 +144,57 @@ export function TerminalPanel({ merchantId, merchantName, category, routing, onA
     [cancelNode],
   );
 
-  // Payment detection over ALL live nodes, by polling the status API every 0.6s (no database credentials in the browser).
+  // Payment detection over ALL live nodes. The request is HELD by the server and answered the moment any of them changes
+  // (see /api/transactions/status), so a payment reaches this screen about one network hop after it clears.
+  // `nodes` is a dependency so a new QR is watched from its first second.
   const listening = !!tx && !done;
   useEffect(() => {
     if (!listening) return;
-    let stopped = false;
-    let inFlight = false; // a slow answer must not pile up more requests behind it
-    const poll = setInterval(async () => {
+    return startLongPoll(async (sig, signal) => {
       keepAudioAlive();
       const list = [...tokens.current];
-      if (!list.length || inFlight) return;
-      inFlight = true;
-      try {
-        const res = await fetch(`/api/transactions/status?tokens=${list.join(",")}`, { cache: "no-store" });
-        if (!res.ok || stopped) return;
-        const rows = (await res.json()) as Transaction[];
-        const paid = rows.find((r) => isPaid(r.status));
-        if (paid) return finish(paid);
-        setProcessing(rows.some((r) => r.status === "PROCESSING"));
-      } catch {
-        /* transient network error: the next poll retries */
-      } finally {
-        inFlight = false;
+      if (!list.length) {
+        await new Promise((r) => setTimeout(r, 300));
+        return sig;
       }
-    }, 600);
-    return () => {
-      stopped = true;
-      clearInterval(poll);
-    };
-  }, [listening, finish]);
+      const res = await fetch(`/api/transactions/status?tokens=${list.join(",")}&wait=7&sig=${encodeURIComponent(sig)}`, { cache: "no-store", signal });
+      if (!res.ok) throw new Error("status");
+      const rows = (await res.json()) as Transaction[];
+      const paid = rows.find((r) => isPaid(r.status));
+      if (paid) {
+        finish(paid);
+        return sig;
+      }
+      setProcessing(rows.some((r) => r.status === "PROCESSING"));
+      return res.headers.get("x-status-sig") ?? "";
+    });
+  }, [listening, finish, nodes]);
 
-  // Live feed of today's paid sales. Catches payments that did not start at this keypad (a customer scanning the printed
-  // shop QR), announcing each new one with the chime. The first load only records what is already there.
+  // Live feed of today's paid sales: catches payments that did not start at this keypad (a waiter's sale, a customer
+  // scanning the printed shop QR) and announces each new one. Held by the server too, so it is not a polling loop.
+  // The first answer only records what is already there.
   useEffect(() => {
-    let stopped = false;
-    const load = async () => {
-      try {
-        const from = eatDayStartISO(eatDateKey(new Date()));
-        const to = new Date(Date.now() + 86_400_000).toISOString();
-        const res = await fetch(`/api/transactions?${new URLSearchParams({ merchant_id: merchantId, from, to, limit: "30" })}`, { cache: "no-store" });
-        if (!res.ok || stopped) return;
-        const rows = ((await res.json()).rows as Transaction[]).filter((r) => isPaid(r.status));
-        if (seenPaid.current === null) {
-          seenPaid.current = new Set(rows.map((r) => r.id));
-        } else {
-          const fresh = rows.filter((r) => !seenPaid.current!.has(r.id));
-          fresh.forEach((r) => seenPaid.current!.add(r.id));
-          if (fresh.length) {
-            playSettlementChime(langRef.current);
-            setToast(fresh[0]);
-            setTimeout(() => setToast(null), 7000);
-          }
+    return startLongPoll(async (sig, signal) => {
+      const from = eatDayStartISO(eatDateKey(new Date()));
+      const to = new Date(Date.now() + 86_400_000).toISOString();
+      const res = await fetch(`/api/transactions?${new URLSearchParams({ merchant_id: merchantId, from, to, limit: "30", wait: "7", sig })}`, { cache: "no-store", signal });
+      if (!res.ok) throw new Error("feed");
+      const rows = ((await res.json()).rows as Transaction[]).filter((r) => isPaid(r.status));
+      if (seenPaid.current === null) {
+        seenPaid.current = new Set(rows.map((r) => r.id));
+      } else {
+        const fresh = rows.filter((r) => !seenPaid.current!.has(r.id));
+        fresh.forEach((r) => seenPaid.current!.add(r.id));
+        if (fresh.length) {
+          playSettlementChime(langRef.current);
+          setToast(fresh[0]);
+          setTimeout(() => setToast(null), 7000);
         }
-        setRecent(rows.slice(0, 5));
-      } catch {
-        /* the feed is a convenience; the sale flow does not depend on it */
       }
-    };
-    void load();
-    const id = setInterval(load, 2000);
-    return () => {
-      stopped = true;
-      clearInterval(id);
-    };
+      setRecent(rows.slice(0, 5));
+      return res.headers.get("x-feed-sig") ?? "";
+    });
   }, [merchantId]);
-
   // Android app: learn the NFC state, refresh it when the cashier returns from Settings, and hear customer taps.
   useEffect(() => {
     const refresh = () => setNative(nativeInfo());

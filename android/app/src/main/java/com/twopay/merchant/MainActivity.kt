@@ -10,6 +10,7 @@ import android.nfc.cardemulation.CardEmulation
 import android.os.Bundle
 import android.print.PrintAttributes
 import android.print.PrintManager
+import android.view.Gravity
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebResourceError
@@ -17,6 +18,8 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
+import android.widget.ImageView
 import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import com.twopay.merchant.nfc.TapPayload
@@ -34,6 +37,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private lateinit var web: WebView
+    private var splash: ImageView? = null
     private lateinit var bridge: NativeBridge
     private val siteHost = BuildConfig.SITE_HOST
     private val startUrl = "https://$siteHost${BuildConfig.START_PATH}"
@@ -46,7 +50,20 @@ class MainActivity : ComponentActivity() {
             layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
             setBackgroundColor(0xFF020617.toInt())
         }
-        setContentView(web)
+        // The logo is on screen from the first frame and goes the instant the page paints, so opening the app never shows
+        // an empty dark screen while the page is fetched.
+        val size = (96 * resources.displayMetrics.density).toInt()
+        splash = ImageView(this).apply {
+            setImageResource(R.mipmap.ic_launcher_foreground)
+            layoutParams = FrameLayout.LayoutParams(size, size, Gravity.CENTER)
+        }
+        setContentView(
+            FrameLayout(this).apply {
+                setBackgroundColor(0xFF020617.toInt())
+                addView(web)
+                addView(splash)
+            },
+        )
 
         with(web.settings) {
             javaScriptEnabled = true
@@ -170,7 +187,15 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    private fun hideSplash() {
+        splash?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        splash = null
+    }
+
     private inner class Client : WebViewClient() {
+        override fun onPageCommitVisible(view: WebView, url: String) = hideSplash()
+        override fun onPageFinished(view: WebView, url: String) = hideSplash()
+
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             val uri = request.url
             val scheme = uri.scheme.orEmpty()
@@ -186,7 +211,10 @@ class MainActivity : ComponentActivity() {
         }
 
         override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
-            if (request.isForMainFrame) view.loadUrl("file:///android_asset/offline.html")
+            if (request.isForMainFrame) {
+                hideSplash()
+                view.loadUrl("file:///android_asset/offline.html")
+            }
         }
     }
 }

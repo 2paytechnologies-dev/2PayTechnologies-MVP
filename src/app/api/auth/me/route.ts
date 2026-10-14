@@ -12,7 +12,8 @@ export const dynamic = "force-dynamic";
 export async function GET() {
   const base = { enforced: authEnforced(), merchant: null as null | { id: string; business_name: string; terminal_id: string }, admin: false, role: "OWNER" as "OWNER" | "CASHIER" | "WAITER", staff: null as null | { id: string; name: string; team_no: string | null }, railMode: railMode() };
   const session = await verifySession((await cookies()).get(SESSION_COOKIE)?.value, process.env.SESSION_SECRET);
-  if (!session) return NextResponse.json(base);
+  const noStore = { headers: { "Cache-Control": "private, no-store" } };
+  if (!session) return NextResponse.json(base, noStore);
 
   try {
     const admin = getAdminClient();
@@ -23,8 +24,8 @@ export async function GET() {
       const { data: s } = await admin.from("merchant_staff").select("id, name, team_no").eq("id", session.sid!).eq("merchant_id", session.mid).eq("active", true).maybeSingle();
       staff = s ?? null;
     }
-    return NextResponse.json({ ...base, merchant: data ?? null, admin: isAdminPhone(session.ph), role: roleOf(session), staff });
+    return NextResponse.json({ ...base, merchant: data ?? null, admin: isAdminPhone(session.ph), role: roleOf(session), staff }, noStore);
   } catch {
-    return NextResponse.json(base);
+    return NextResponse.json(base, noStore);
   }
 }

@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { BarChart3, CalendarClock, FlaskConical, LogIn, LogOut, Megaphone, Nfc, Store, UserCog, Users, Wallet } from "lucide-react";
@@ -8,17 +9,38 @@ import { Logo } from "@/components/Logo";
 import { LanguageMenu } from "@/components/LanguageMenu";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { TerminalPanel } from "@/components/TerminalPanel";
-import { PaymentAccountsTab } from "@/components/merchant/PaymentAccountsTab";
-import { LookbackTab } from "@/components/merchant/LookbackTab";
-import { BriefingTab } from "@/components/merchant/BriefingTab";
-import { CampaignsTab } from "@/components/merchant/CampaignsTab";
-import { TeamTab } from "@/components/merchant/TeamTab";
-import { ProfileTab } from "@/components/merchant/ProfileTab";
-import { defaultMerchantId, fetchSession, type SessionInfo } from "@/lib/client-session";
+import { cachedPortal, fetchPortal, forgetPortal, type Portal, type SessionInfo } from "@/lib/client-session";
 import { setNodeMode } from "@/lib/native";
 import { useT, type Key } from "@/lib/i18n";
 import type { Merchant } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+/**
+ * The terminal is what opens first, so it is in the first download. Every other tab is its own small download, fetched
+ * quietly in the background right after the terminal is on screen (so the first tap on a tab is instant) and kept alive
+ * once opened (so coming back to a tab is instant and keeps what you were looking at).
+ */
+const loaders = {
+  accounts: () => import("@/components/merchant/PaymentAccountsTab").then((m) => m.PaymentAccountsTab),
+  sales: () => import("@/components/merchant/LookbackTab").then((m) => m.LookbackTab),
+  today: () => import("@/components/merchant/BriefingTab").then((m) => m.BriefingTab),
+  ads: () => import("@/components/merchant/CampaignsTab").then((m) => m.CampaignsTab),
+  team: () => import("@/components/merchant/TeamTab").then((m) => m.TeamTab),
+  profile: () => import("@/components/merchant/ProfileTab").then((m) => m.ProfileTab),
+};
+const TabSkeleton = () => (
+  <div className="space-y-3" aria-busy="true">
+    <div className="h-7 w-40 animate-pulse rounded-lg bg-slate-800" />
+    <div className="h-24 animate-pulse rounded-2xl bg-slate-900" />
+    <div className="h-24 animate-pulse rounded-2xl bg-slate-900" />
+  </div>
+);
+const PaymentAccountsTab = dynamic(loaders.accounts, { loading: TabSkeleton });
+const LookbackTab = dynamic(loaders.sales, { loading: TabSkeleton });
+const BriefingTab = dynamic(loaders.today, { loading: TabSkeleton });
+const CampaignsTab = dynamic(loaders.ads, { loading: TabSkeleton });
+const TeamTab = dynamic(loaders.team, { loading: TabSkeleton });
+const ProfileTab = dynamic(loaders.profile, { loading: TabSkeleton });
 
 const ALL_TABS = [
   { id: "terminal", key: "portal.tab.terminal", icon: Nfc },
@@ -31,56 +53,90 @@ const ALL_TABS = [
 ] as const satisfies readonly { id: string; key: Key; icon: unknown }[];
 type TabId = (typeof ALL_TABS)[number]["id"];
 
+/** A tab left for longer than this is rebuilt (fresh data) when you come back; sooner than this it is shown as you left it. */
+const STALE_MS = 60_000;
+
 export default function MerchantPortalPage() {
   const t = useT();
   const router = useRouter();
   const [merchants, setMerchants] = useState<Merchant[]>([]);
   const [merchantId, setMerchantId] = useState("");
   const [tab, setTab] = useState<TabId>("terminal");
+  const [visited, setVisited] = useState<ReadonlySet<TabId>>(new Set<TabId>(["terminal"]));
+  const [epoch, setEpoch] = useState<Record<string, number>>({});
   const [welcome, setWelcome] = useState(false);
   const [saleActive, setSaleActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [session, setSession] = useState<SessionInfo | null>(null);
+  const [fresh, setFresh] = useState(false); // false while only the remembered copy is on screen
+  const leftAt = useRef<Record<string, number>>({});
 
-  const loadMerchants = useCallback(async () => {
+  const apply = useCallback((p: Portal, isFresh: boolean) => {
+    setMerchants(p.merchants);
+    setSession(p.session);
+    setMerchantId((cur) => (cur && p.merchants.some((m) => m.id === cur) ? cur : p.defaultMerchantId));
+    if (isFresh) setFresh(true);
+  }, []);
+
+  const loadPortal = useCallback(async () => {
     try {
-      const r = await fetch("/api/merchants", { cache: "no-store" });
-      const d = await r.json();
-      if (Array.isArray(d) && d.length) {
-        setMerchants(d);
-        setMerchantId((cur) => cur || "");
-        return d as Merchant[];
+      const p = await fetchPortal();
+      if (p) {
+        setError(null);
+        apply(p, true);
+        return p.merchants;
       }
-      setError(d?.error ?? "No merchants found");
+      setError(t("common.errorGeneric"));
     } catch {
       setError(t("common.offline"));
     }
     return [] as Merchant[];
-  }, [t]);
+  }, [apply, t]);
 
   useEffect(() => {
-    void loadMerchants().then((list) => {
-      if (list.length) void defaultMerchantId(list).then(setMerchantId);
-    });
-    void fetchSession().then(setSession);
+    // 1) paint what was on screen last time, at once; 2) replace it with the live answer (one request).
+    const cached = cachedPortal();
+    if (cached) apply(cached, false);
+    void loadPortal();
     // Deep links: /dashboard/merchant?tab=ads  (and ?welcome=1 right after registering)
     const q = new URLSearchParams(window.location.search);
     const wanted = ALL_TABS.find((x) => x.id === q.get("tab"));
-    if (wanted) setTab(wanted.id);
+    if (wanted) {
+      setTab(wanted.id);
+      setVisited((v) => new Set(v).add(wanted.id));
+    }
     if (q.get("welcome") === "1") setWelcome(true);
-  }, [loadMerchants]);
+  }, [apply, loadPortal]);
+
+  // Warm the other tabs' code once the terminal has had a moment to settle.
+  useEffect(() => {
+    if (!fresh) return;
+    const warm = () => Object.values(loaders).forEach((load) => void load().catch(() => {}));
+    if (typeof window.requestIdleCallback === "function") {
+      const id = window.requestIdleCallback(warm, { timeout: 4000 });
+      return () => window.cancelIdleCallback(id);
+    }
+    const id = window.setTimeout(warm, 1500);
+    return () => clearTimeout(id);
+  }, [fresh]);
 
   const role = session?.role ?? "OWNER"; // test mode has no session: everything is open
   // A waiter's or cashier's phone is a payment terminal and nothing else (a no-op outside the Android app).
   useEffect(() => {
-    if (session) setNodeMode(role !== "OWNER" && !!session.merchant);
+    if (session) setNodeMode((role === "WAITER" || role === "CASHIER") && !!session.merchant);
   }, [session, role]);
-  const tabs = useMemo(() => (role !== "OWNER" ? ALL_TABS.filter((x) => x.id === "terminal") : ALL_TABS), [role]); // cashiers and waiters get the terminal only
+
+  const tabs = useMemo(() => (role === "OWNER" ? ALL_TABS : role === "MANAGER" ? ALL_TABS.filter((x) => x.id === "terminal" || x.id === "accounts") : ALL_TABS.filter((x) => x.id === "terminal")), [role]);
   const merchant = merchants.find((m) => m.id === merchantId);
-  const needsSetup = !!merchant?.routing && !merchant.routing.bank && !merchant.routing.wallet && role === "OWNER";
+  const needsSetup = !!merchant?.routing && !merchant.routing.bank && !merchant.routing.wallet && (role === "OWNER" || role === "MANAGER");
 
   const go = (id: TabId) => {
+    // Remember when the tab we are leaving was last on screen; rebuild the one we are entering if it has gone stale.
+    leftAt.current[tab] = Date.now();
+    const left = leftAt.current[id];
+    if (left && Date.now() - left > STALE_MS && id !== "terminal") setEpoch((e) => ({ ...e, [id]: (e[id] ?? 0) + 1 }));
     setTab(id);
+    setVisited((v) => (v.has(id) ? v : new Set(v).add(id)));
     try {
       history.replaceState(null, "", `?tab=${id}`);
     } catch {
@@ -89,10 +145,20 @@ export default function MerchantPortalPage() {
   };
 
   const signOut = async () => {
+    forgetPortal();
     await fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
     router.push("/signin");
     router.refresh();
   };
+
+  const body = (id: Exclude<TabId, "terminal">, node: React.ReactNode) =>
+    merchant && visited.has(id) ? (
+      <div hidden={tab !== id} key={`${merchant.id}:${id}:${epoch[id] ?? 0}`}>
+        {node}
+      </div>
+    ) : null;
+  const canOwn = role === "OWNER";
+  const canAccounts = role === "OWNER" || role === "MANAGER";
 
   return (
     <main className="mx-auto max-w-5xl p-4 pb-16 sm:p-8">
@@ -168,7 +234,9 @@ export default function MerchantPortalPage() {
         </nav>
       )}
 
-      {error && <div className="mb-4 rounded-lg bg-rose-500/15 p-3 text-sm text-rose-300">{error}</div>}
+      {error && !merchant && <div className="mb-4 rounded-lg bg-rose-500/15 p-3 text-sm text-rose-300">{error}</div>}
+
+      {!merchant && !error && <TabSkeleton />}
 
       {merchant && (
         <>
@@ -181,19 +249,17 @@ export default function MerchantPortalPage() {
               category={merchant.category}
               routing={merchant.routing}
               onActiveChange={setSaleActive}
-              onNeedSetup={role === "OWNER" ? () => go("accounts") : undefined}
+              onNeedSetup={canAccounts ? () => go("accounts") : undefined}
               role={role}
               staff={session?.staff ?? null}
             />
           </div>
-          {role === "OWNER" && tab === "accounts" && (
-            <PaymentAccountsTab key={merchant.id} merchant={merchant} welcome={welcome} onChanged={() => void loadMerchants()} onOpenTerminal={() => go("terminal")} />
-          )}
-          {role === "OWNER" && tab === "sales" && <LookbackTab key={merchant.id} merchant={merchant} />}
-          {role === "OWNER" && tab === "today" && <BriefingTab key={merchant.id} merchant={merchant} />}
-          {role === "OWNER" && tab === "ads" && <CampaignsTab key={merchant.id} merchant={merchant} />}
-          {role === "OWNER" && tab === "team" && <TeamTab key={merchant.id} merchant={merchant} />}
-          {role === "OWNER" && tab === "profile" && <ProfileTab key={merchant.id} merchant={merchant} onSignOut={signOut} signedIn={!!session?.merchant} />}
+          {canAccounts && body("accounts", <PaymentAccountsTab merchant={merchant} welcome={welcome} onChanged={() => void loadPortal()} onOpenTerminal={() => go("terminal")} />)}
+          {canOwn && body("sales", <LookbackTab merchant={merchant} />)}
+          {canOwn && body("today", <BriefingTab merchant={merchant} />)}
+          {canOwn && body("ads", <CampaignsTab merchant={merchant} />)}
+          {canOwn && body("team", <TeamTab merchant={merchant} />)}
+          {canOwn && body("profile", <ProfileTab merchant={merchant} onSignOut={signOut} signedIn={!!session?.merchant} />)}
         </>
       )}
     </main>

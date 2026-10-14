@@ -8,6 +8,12 @@ import { createPayNode } from "@/lib/pay-nodes";
 export const dynamic = "force-dynamic";
 
 const MAX_PAGE = 1000;
+/** The longest a held feed request may live (seconds); see the `wait` parameter below. */
+export const maxDuration = 15;
+const MAX_WAIT_S = 7;
+const CHECK_EVERY_MS = 200;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const feedSignature = (rows: { id: string; status: string }[]) => rows.map((r) => `${r.id}:${r.status}`).join("|");
 
 /**
  * A merchant's transactions in [from, to), newest first, paged with limit/offset.
@@ -35,16 +41,31 @@ export async function GET(req: Request) {
   const onlyStaff = role === "WAITER" ? staffIdOf(guard.session) : null;
   if (role === "WAITER" && !onlyStaff) return NextResponse.json({ error: "This waiter session is not linked to a team member. Sign in again." }, { status: 403 });
   const limit = Math.min(MAX_PAGE, Math.max(1, Number(q.get("limit")) || MAX_PAGE));
+  // `wait` (seconds) + `sig` (the x-feed-sig header of the last answer): hold the request until the list changes, so a new
+  // payment reaches the terminal about one network hop after it clears. Without `wait` it answers at once.
+  const wait = Math.min(MAX_WAIT_S, Math.max(0, Number(q.get("wait")) || 0));
+  const knownSig = q.get("sig") ?? "";
   const offset = Math.max(0, Number(q.get("offset")) || 0);
 
   try {
     const admin = getAdminClient();
-    let query = admin.from("transactions").select("*").eq("merchant_id", merchantId).gte("created_at", from).lt("created_at", to);
-    if (onlyStaff) query = query.eq("staff_id", onlyStaff);
-    const { data, error } = await query
-      .order("created_at", { ascending: false })
-      .order("id", { ascending: false }) // stable tiebreak so pages never overlap
-      .range(offset, offset + limit); // one extra row tells the caller whether more remain
+    const readRows = async () => {
+      let query = admin.from("transactions").select("*").eq("merchant_id", merchantId).gte("created_at", from).lt("created_at", to);
+      if (onlyStaff) query = query.eq("staff_id", onlyStaff);
+      return query
+        .order("created_at", { ascending: false })
+        .order("id", { ascending: false }) // stable tiebreak so pages never overlap
+        .range(offset, offset + limit); // one extra row tells the caller whether more remain
+    };
+    let { data, error } = await readRows();
+    if (!error && wait > 0 && feedSignature(data ?? []) === knownSig) {
+      const deadline = Date.now() + wait * 1000;
+      while (Date.now() < deadline && !req.signal.aborted) {
+        await sleep(CHECK_EVERY_MS);
+        ({ data, error } = await readRows());
+        if (error || feedSignature(data ?? []) !== knownSig) break;
+      }
+    }
     if (error) {
       console.error("[transactions GET]", error.code, error.message);
       return NextResponse.json({ error: "Could not load transactions" }, { status: 500 });
@@ -60,7 +81,7 @@ export async function GET(req: Request) {
       for (const m of members ?? []) staff[m.id] = { id: m.id, name: m.name, team_no: m.team_no, role: m.role };
     }
     const safe = page.map(({ rail_checkout_url, rail_session_id, rail_nonce, ...rest }) => ({ ...rest, confirmation: toConfirmation(rest as Parameters<typeof toConfirmation>[0], staff), staff_name: rest.staff_id ? (staff[rest.staff_id as string]?.name ?? null) : null, team_no: rest.staff_id ? (staff[rest.staff_id as string]?.team_no ?? null) : null }));
-    return NextResponse.json({ rows: safe, hasMore: rows.length > limit }, { headers: { "Cache-Control": "no-store" } });
+    return NextResponse.json({ rows: safe, hasMore: rows.length > limit }, { headers: { "Cache-Control": "private, no-store", "x-feed-sig": feedSignature(rows) } });
   } catch (e) {
     if (e instanceof AdminConfigError) return NextResponse.json({ error: "Server misconfigured" }, { status: 500 });
     throw e;

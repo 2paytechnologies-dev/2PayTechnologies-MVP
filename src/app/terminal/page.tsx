@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { Logo } from "@/components/Logo";
 import { LanguageMenu } from "@/components/LanguageMenu";
 import { TerminalPanel } from "@/components/TerminalPanel";
-import { defaultMerchantId } from "@/lib/client-session";
+import { cachedPortal, fetchPortal, type Role, type SessionInfo } from "@/lib/client-session";
 import { useT } from "@/lib/i18n";
 import type { Merchant } from "@/lib/types";
 
@@ -14,19 +14,26 @@ export default function TerminalPage() {
   const [merchantId, setMerchantId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [locked, setLocked] = useState(false);
+  const [role, setRole] = useState<Role>("OWNER");
+  const [staff, setStaff] = useState<SessionInfo["staff"]>(null);
 
   useEffect(() => {
-    fetch("/api/merchants", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((d) => {
-        if (Array.isArray(d) && d.length) {
-          setMerchants(d);
-          void defaultMerchantId(d).then(setMerchantId);
-        } else setError(d?.error ?? "No merchants found");
+    // Paint what was on screen last time at once, then replace it with the live answer (one request for everything).
+    const cached = cachedPortal();
+    if (cached) {
+      setMerchants(cached.merchants);
+      setMerchantId(cached.defaultMerchantId);
+    }
+    fetchPortal()
+      .then((p) => {
+        if (!p) return setError(t("common.errorGeneric"));
+        setMerchants(p.merchants);
+        setMerchantId((cur) => (cur && p.merchants.some((m) => m.id === cur) ? cur : p.defaultMerchantId));
+        setRole(p.session.role);
+        setStaff(p.session.staff);
       })
       .catch(() => setError(t("common.offline")));
   }, [t]);
-
   const merchant = merchants.find((m) => m.id === merchantId);
 
   return (
@@ -58,7 +65,7 @@ export default function TerminalPage() {
       {error && <div className="rounded-lg bg-rose-500/15 p-3 text-sm text-rose-300">{error}</div>}
 
       {merchantId && (
-        <TerminalPanel key={merchantId} merchantId={merchantId} merchantName={merchant?.business_name} category={merchant?.category} routing={merchant?.routing} onActiveChange={setLocked} />
+        <TerminalPanel key={merchantId} merchantId={merchantId} merchantName={merchant?.business_name} category={merchant?.category} routing={merchant?.routing} onActiveChange={setLocked} role={role} staff={staff} />
       )}
     </main>
   );

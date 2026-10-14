@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { HandCoins, Loader2, Users } from "lucide-react";
 import { useT } from "@/lib/i18n";
 import { eatDateKey, eatDayStartISO, fmt } from "@/lib/format";
+import { pollWhileVisible } from "@/lib/poll";
 import type { LedgerLine } from "@/lib/team";
 
 interface Ledger {
@@ -39,11 +40,11 @@ export function ShiftLedger({ merchantId, mine = false }: { merchantId: string; 
         if (!stopped) setFailed(true);
       }
     };
-    void load();
-    const id = setInterval(load, 8000);
+    // One request at a time, paused while the app is in the background, caught up when it comes back.
+    const stop = pollWhileVisible(load, 10_000);
     return () => {
       stopped = true;
-      clearInterval(id);
+      stop();
     };
   }, [merchantId]);
 

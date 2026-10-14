@@ -26,9 +26,14 @@ export async function GET() {
       console.error("[merchants GET]", error.message);
       return NextResponse.json({ error: "Could not load merchants" }, { status: 500 });
     }
-    const merchants: Merchant[] = (data ?? []).map(({ active_bank, active_wallet, ...pub }) => ({
-      ...(pub as Omit<Merchant, "routing">),
-      routing: { bank: active_bank?.institution ?? null, wallet: active_wallet?.institution ?? null },
+    // Named fields only (never a spread): whatever else a row might carry can never reach the browser.
+    const merchants: Merchant[] = (data ?? []).map((m) => ({
+      id: m.id,
+      business_name: m.business_name,
+      category: m.category,
+      terminal_id: m.terminal_id,
+      location: m.location ?? null,
+      routing: { bank: m.active_bank?.institution ?? null, wallet: m.active_wallet?.institution ?? null },
     }));
     return NextResponse.json(merchants, { headers: { "Cache-Control": "no-store" } });
   } catch (e) {

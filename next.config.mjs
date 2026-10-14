@@ -42,6 +42,14 @@ const nextConfig = {
       { source: "/sw.js", headers: [{ key: "Cache-Control", value: "no-cache, max-age=0" }] },
       // The update manifest must never be served stale, or phones would not learn about a new version.
       { source: "/downloads/latest.json", headers: [{ key: "Cache-Control", value: "no-cache, max-age=0" }] },
+      // Icons and the recorded Amharic word never change at a given address (they are linked with ?v=N and N is bumped when
+      // they change), so a phone keeps them for a year instead of asking the server about them on every open.
+      { source: "/icons/:path*", headers: [{ key: "Cache-Control", value: "public, max-age=31536000, immutable" }] },
+      { source: "/sounds/:path*", headers: [{ key: "Cache-Control", value: "public, max-age=31536000, immutable" }] },
+      { source: "/favicon.ico", headers: [{ key: "Cache-Control", value: "public, max-age=604800" }] },
+      { source: "/icon.png", headers: [{ key: "Cache-Control", value: "public, max-age=604800, stale-while-revalidate=86400" }] },
+      // Everything under /api is about one person or one payment: never stored by a shared cache.
+      { source: "/api/:path*", headers: [{ key: "Cache-Control", value: "private, no-store" }] },
     ];
   },
 };
