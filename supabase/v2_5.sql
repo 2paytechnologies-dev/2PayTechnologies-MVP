@@ -5,7 +5,14 @@
 -- Every sale now records exactly what 2Pay charged: the fee before VAT, the 15% VAT on that fee, and what the merchant is
 -- paid. Ten-thousandths of an ETB (the schedule produces figures like 0.575 and 1.0632). `fee_ft` keeps the total fee
 -- (base + VAT) so existing totals keep working; it needs the same extra decimals.
-alter table transactions alter column fee_ft type numeric(12,4);
+do $$
+begin
+  alter table transactions alter column fee_ft type numeric(12,4);
+exception when others then
+  -- A view or rule that depends on the column can block this. The sale still saves (fee_ft is then rounded to 2 decimals;
+  -- base_fee, vat_fee and net_merchant_settlement keep full precision), so this must not undo the rest of the script.
+  raise notice 'fee_ft left at its old precision: %', sqlerrm;
+end $$;
 alter table transactions add column if not exists base_fee                numeric(14,4);
 alter table transactions add column if not exists vat_fee                 numeric(14,4);
 alter table transactions add column if not exists net_merchant_settlement numeric(14,4);
