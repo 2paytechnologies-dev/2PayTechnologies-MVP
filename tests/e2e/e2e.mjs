@@ -834,6 +834,40 @@ section("ride-hailing: a driver is paid for a finished trip");
   t("the audit log never holds an API key, a checkout link or a full account number", !JSON.stringify((await db()).audit_log).match(new RegExp(`${KEY}|${rot.data.api_key}|${TOK2}|0911223344|0922334455|01320123456789`)));
 }
 
+section("admin hub: network nodes, Fayda tracker and NBE compliance evidence");
+{
+  await fetch(MOCK + "/__reset_limits");
+  for (const path of ["/api/admin/network", "/api/admin/fayda", "/api/admin/compliance"]) {
+    t(`${path}: an owner cannot read it`, (await call("GET", path, { ck: ownerA })).status === 403);
+    t(`${path}: a cashier cannot read it`, (await call("GET", path, { ck: cashierA })).status === 403);
+    t(`${path}: nobody signed in cannot read it`, (await call("GET", path)).status === 401);
+  }
+
+  const net = await call("GET", "/api/admin/network", { ck: admin });
+  t("network: counts businesses, stands, app phones, partners and drivers", net.status === 200 && net.data.merchants >= 2 && net.data.shop_qr_stands >= 1 && typeof net.data.app_devices === "number" && net.data.ride_partners >= 2 && net.data.ride_checkouts_24h >= 3 && net.data.ride_drivers_24h >= 1 && net.data.ride_available === true, JSON.stringify(net.data));
+  t("network: counts only, no names, phones or keys", !JSON.stringify(net.data).match(/\+251|2pay_rk_|drv-77|Feres/));
+
+  const fy = await call("GET", "/api/admin/fayda", { ck: admin });
+  const rowB = fy.data?.rows?.find((r) => r.id === B);
+  const rowA = fy.data?.rows?.find((r) => r.id === A);
+  t("Fayda tracker: totals and set-up state", fy.status === 200 && fy.data.summary.total >= 2 && fy.data.summary.verified >= 1 && fy.data.setup.ekyc === "gateway" && fy.data.setup.required === false, JSON.stringify(fy.data?.summary) + JSON.stringify(fy.data?.setup));
+  t("Fayda tracker: the verified owner shows when and the gateway reference", rowB?.state === "VERIFIED" && !!rowB.verified_at && !!rowB.gateway_ref, JSON.stringify(rowB));
+  t("Fayda tracker: an owner who used up their wrong codes shows as locked", rowA?.state === "LOCKED" && rowA.wrong_codes >= 5, JSON.stringify(rowA));
+  t("Fayda tracker: never shows a FAN, a name or an ID detail", !JSON.stringify(fy.data).match(new RegExp(`${FAN}|Bekele|Girma|fayda_fan|fayda_name|enc:v1`)));
+
+  const co = await call("GET", "/api/admin/compliance", { ck: admin });
+  const rideSale = co.data?.sales?.find((s) => s.source === "RIDE");
+  t("compliance: paid sales are counted by evidence type", co.status === 200 && co.data.paths.total >= 1 && co.data.paths.provider_confirmed >= 1 && co.data.window_days === 7, JSON.stringify(co.data?.paths));
+  t("compliance: the ride sale shows the route payer app -> provider -> driver's account (masked), confirmed by the provider", rideSale?.path === "PROVIDER_CONFIRMED" && rideSale.payer_app === "Telebirr" && !!rideSale.provider && rideSale.to_institution === "Telebirr" && rideSale.to_account === "••••3344" && !!rideSale.confirmed_at, JSON.stringify(rideSale));
+  t("compliance: the fee, VAT and merchant net are in the evidence", rideSale?.base_fee === 0.9084 && rideSale.vat_fee === 0.1363 && rideSale.net_to_merchant === 248.9553, JSON.stringify(rideSale));
+  t("compliance: funds in flight are reported", typeof co.data.in_flight.count === "number" && typeof co.data.in_flight.amount === "number");
+  t("compliance: phones bound to the app are listed with a short fingerprint only", Array.isArray(co.data.devices) && co.data.devices.length >= 1 && co.data.devices.every((d) => d.device.length === 10 && !("device_id_hash" in d)), JSON.stringify(co.data.devices?.[0]));
+  const acts3 = new Set(co.data.controls.map((c) => c.action));
+  t("compliance: sensitive changes are listed (accounts, ID checks, partners)", acts3.has("settlement.update") && acts3.has("kyc.fayda.verified") && acts3.has("ride.partner.create"), [...acts3].join(","));
+  t("compliance: it states what is built and what is not (no claim of device attestation)", co.data.design.length >= 3 && co.data.not_built.some((x) => /attestation/i.test(x)) && co.data.not_built.some((x) => /statement/i.test(x)));
+  t("compliance: no full account number, key, link or FAN anywhere in it", !JSON.stringify(co.data).match(new RegExp(`0911223344|0922334455|01320123456789|1000123456789|${FAN}|2pay_rk_|enc:v1`)));
+}
+
 section("national ID (Fayda): prove the owner is who they say");
 {
   await fetch(MOCK + "/__reset_limits");

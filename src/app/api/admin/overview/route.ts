@@ -23,7 +23,7 @@ export async function GET() {
     const [tx, ev, m] = await Promise.all([
       admin
         .from("transactions")
-        .select("id, merchant_id, amount, currency, status, rail, fee_ft, latency_ms, expires_at, created_at, settled_at, settlement_method")
+        .select("id, merchant_id, amount, currency, status, rail, fee_ft, base_fee, vat_fee, net_merchant_settlement, source, rail_provider, latency_ms, expires_at, created_at, settled_at, settlement_method")
         .gte("created_at", since)
         .order("created_at", { ascending: false })
         .limit(TX_CAP),

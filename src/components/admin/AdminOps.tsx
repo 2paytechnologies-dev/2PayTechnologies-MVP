@@ -1,14 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { BadgeCheck, Car, ClipboardList, KeyRound, Loader2, RotateCcw, Siren } from "lucide-react";
+import { BadgeCheck, Car, ClipboardList, Fingerprint, KeyRound, Landmark, Loader2, RotateCcw, Siren } from "lucide-react";
+import { FaydaTracker } from "@/components/admin/FaydaTracker";
+import { ComplianceAudit } from "@/components/admin/ComplianceAudit";
 import { fmt, formatEAT } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-type Tab = "refunds" | "kyc" | "keys" | "partners" | "audit" | "errors";
+type Tab = "refunds" | "kyc" | "fayda" | "nbe" | "keys" | "partners" | "audit" | "errors";
 const TABS: { id: Tab; label: string; icon: typeof RotateCcw }[] = [
   { id: "refunds", label: "Refund requests", icon: RotateCcw },
   { id: "kyc", label: "Verification", icon: BadgeCheck },
+  { id: "fayda", label: "Fayda KYC", icon: Fingerprint },
+  { id: "nbe", label: "NBE compliance", icon: Landmark },
   { id: "keys", label: "Security keys", icon: KeyRound },
   { id: "partners", label: "Ride partners", icon: Car },
   { id: "audit", label: "Audit log", icon: ClipboardList },
@@ -30,6 +34,8 @@ export function AdminOps() {
       <div className="p-4">
         {tab === "refunds" && <Refunds />}
         {tab === "kyc" && <Kyc />}
+        {tab === "fayda" && <FaydaTracker />}
+        {tab === "nbe" && <ComplianceAudit />}
         {tab === "keys" && <SecurityKeys />}
         {tab === "partners" && <RidePartners />}
         {tab === "audit" && <Table url="/api/admin/audit?limit=100" empty="No audit entries yet." cols={["Time (EAT)", "Actor", "Role", "Action", "Target", "IP", "Details"]} row={(r) => [formatEAT(r.created_at), r.actor_phone ?? "—", r.role ?? "—", r.action, `${r.target_type ?? ""} ${String(r.target_id ?? "").slice(0, 8)}`, r.ip ?? "", JSON.stringify(r.details ?? {})]} />}

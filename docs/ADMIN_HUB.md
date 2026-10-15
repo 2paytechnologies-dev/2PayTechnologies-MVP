@@ -1,0 +1,15 @@
+# Admin Intelligence & Compliance Hub (V2.5)
+
+`/dashboard/admin`. Admin phones only (`ADMIN_PHONES`). Every panel reads real records; where something cannot be known from 2Pay's own data, the screen says so rather than inventing it.
+
+| Module | Where | Data it reads | Honest limits |
+|---|---|---|---|
+| **Network telemetry** | Top cards | today's paid sales: volume (GMV), settled taps, average initiation latency against the 2.0 s target | latency is measured from the sale record |
+| **Network & node management** | Section under the cards | sales by channel: cashier terminals, ride-hailing software nodes, passive shop-QR stands (active nodes today, taps, volume, share, latency); counts of businesses, stands, phones bound to the app, ride partners, drivers and checkouts in 24 h (`/api/admin/network`) | a sale records the channel it started on, not whether the app or a browser was used, so "cashier terminals" covers both |
+| **Watchdog & Compliance Oracle** | Section | live feed (refreshes every 5 s) of velocity spikes, settlement mismatches and AML/FIS draft reports; ECR / fiscal-memory and fuel-forecourt signals arrive through `/api/watchdog/ingest` | the ECR and fuel feeds exist only when a source system posts to the ingest route; 2Pay has no direct link to the Ministry of Revenues or pump hardware |
+| **Fayda KYC tracker** | Tab "Fayda KYC" (`/api/admin/fayda`) | every owner: verified (when, gateway reference), code sent, locked after wrong codes, not started; progress bar; whether Fayda is mandatory and which routes are connected | never shows a FAN, a name or any ID detail |
+| **Fee telemetry** | Section "Orchestration fee schedule" | the schedule, a calculator, and per node today: fee, VAT, total deducted, effective rate, merchant net, from the fee ledger recorded on each sale | see the note on risk premium below |
+| **NBE compliance evidence** | Tab "NBE compliance" (`/api/admin/compliance`) | per paid sale (7 days): payer app -> provider -> receiving account (masked), whether the provider's signed callback confirmed it, settle time, fee and net; funds in flight at providers; settlement mismatches; phones bound to the app (short fingerprint); sensitive control events from the audit log; a list of how the system is built and a list of what is not built | it is evidence, not a certificate: proof of zero float is the partner bank's and provider's own statements, and device attestation (Play Integrity) is not built |
+
+## About the "risk premium" in the fee inspector
+The earlier fee formula added a Watchdog risk premium per node. The tiered schedule specified for V2.5 prices by amount alone, so risk does not change what any node is charged, and showing a "risk premium that adjusts pricing" would misstate the bill. The fee panel therefore shows what was actually charged and keeps the Watchdog risk score beside it for context, labelled "not priced". If you want risk-based pricing back, it is a pricing decision to make deliberately (and to agree with the National Bank and merchants), not something to show on a dashboard first.

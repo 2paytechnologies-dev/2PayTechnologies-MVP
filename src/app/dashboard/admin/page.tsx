@@ -10,6 +10,7 @@ import { useOverview } from "@/lib/use-overview";
 import { WatchdogFeed } from "@/components/admin/WatchdogFeed";
 import { FeeInspector } from "@/components/admin/FeeInspector";
 import { AdminOps } from "@/components/admin/AdminOps";
+import { NetworkNodes } from "@/components/admin/NetworkNodes";
 
 export default function AdminHubPage() {
   const { transactions: txs, events, merchants, error: txError, eventsError: eventError } = useOverview(5000);
@@ -55,8 +56,9 @@ export default function AdminHubPage() {
         <Card icon={ShieldCheck} label="Critical Signals" value={String(events.filter((e) => e.severity === "CRITICAL").length)} sub="in the latest feed window" valueClass={events.some((e) => e.severity === "CRITICAL") ? "text-rose-400" : ""} />
       </section>
 
+      <NetworkNodes txs={txs} merchants={merchants} />
       <WatchdogFeed events={events} merchants={merchantMap} error={eventError} />
-      <FeeInspector />
+      <FeeInspector txs={txs} events={events} merchants={merchants} />
       <AdminOps />
     </main>
   );

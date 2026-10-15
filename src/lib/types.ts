@@ -52,7 +52,12 @@ export interface Transaction {
   routed_wallet: RoutedAccount | null;
   settlement_method: SettlementMethod | null;
   /** Where the sale started: the cashier keypad, or a customer scanning the printed shop QR. */
-  source?: "TERMINAL" | "STATIC_QR";
+  source?: "TERMINAL" | "STATIC_QR" | "RIDE";
+  /** The tiered fee before VAT, the 15% VAT on it, and what the merchant receives (V2.5 sales; empty on older ones). fee_ft is the total. */
+  base_fee?: number | null;
+  vat_fee?: number | null;
+  net_merchant_settlement?: number | null;
+  rail_provider?: string | null;
   /** The team member who keyed the sale (null = owner / counter) and the extra the customer paid on top of the receipt. */
   staff_id?: string | null;
   tip_amount?: number | null;

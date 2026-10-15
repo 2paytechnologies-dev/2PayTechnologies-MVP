@@ -4,13 +4,32 @@ import { useMemo, useState } from "react";
 import { Calculator } from "lucide-react";
 import { BRACKETS, VAT_PERCENT, priceTransaction } from "@/lib/pricing/engine";
 import { fmt } from "@/lib/format";
+import { isPaid, type Merchant, type Transaction, type WatchdogEvent } from "@/lib/types";
 
 const money = (n: number) => n.toFixed(4).replace(/0+$/, "").replace(/\.$/, ".0");
 const SAMPLES = [50, 100, 300, 499.99, 500, 2500, 5000, 9999, 10000, 50000];
 
 /** The fee schedule in force and a calculator. The schedule is fixed in code (lib/pricing/engine.ts), so what is shown here is what is charged. */
-export function FeeInspector() {
+export function FeeInspector({ txs = [], events = [], merchants = [] }: { txs?: Transaction[]; events?: WatchdogEvent[]; merchants?: Merchant[] }) {
   const [amount, setAmount] = useState(1000);
+  // What each node was actually charged today, from the ledger (the fee, VAT and net recorded on each sale), beside its Watchdog risk.
+  const nodes = useMemo(() => {
+    const hourAgo = Date.now() - 3_600_000;
+    return merchants
+      .map((m) => {
+        const paid = txs.filter((t) => t.merchant_id === m.id && isPaid(t.status));
+        const priced = paid.filter((t) => t.base_fee != null);
+        const ev = events.filter((e) => e.merchant_id === m.id && new Date(e.created_at).getTime() >= hourAgo);
+        const gmv = paid.reduce((s, t) => s + Number(t.amount), 0);
+        const base = priced.reduce((s, t) => s + Number(t.base_fee), 0);
+        const vat = priced.reduce((s, t) => s + Number(t.vat_fee ?? 0), 0);
+        const net = priced.reduce((s, t) => s + Number(t.net_merchant_settlement ?? 0), 0);
+        const pricedGmv = priced.reduce((s, t) => s + Number(t.amount), 0);
+        return { m, taps: paid.length, legacy: paid.length - priced.length, gmv, base, vat, total: base + vat, net, rate: pricedGmv ? ((base + vat) / pricedGmv) * 100 : null, risk: ev.length ? ev.reduce((s, e) => s + e.risk_score, 0) / ev.length : 0, signals: ev.length };
+      })
+      .filter((n) => n.taps > 0 || merchants.length <= 12);
+  }, [txs, events, merchants]);
+  const totals = useMemo(() => nodes.reduce((a, n) => ({ base: a.base + n.base, vat: a.vat + n.vat, net: a.net + n.net, gmv: a.gmv + n.gmv }), { base: 0, vat: 0, net: 0, gmv: 0 }), [nodes]);
   const price = useMemo(() => priceTransaction(Math.max(1, amount)), [amount]);
 
   return (
@@ -68,6 +87,47 @@ export function FeeInspector() {
           <dt className="text-slate-300">Total deducted</dt><dd className="text-right font-semibold tabular-nums">{money(price.total_fee)} ETB</dd>
           <dt className="text-slate-300">Merchant receives</dt><dd className="text-right font-bold tabular-nums text-emerald-300">{money(price.net_merchant_settlement)} ETB</dd>
         </dl>
+      </div>
+
+      <h3 className="mb-1 mt-6 text-sm font-semibold">Fee telemetry by node (today)</h3>
+      <p className="mb-3 text-xs text-slate-500">
+        What each node was actually charged, from the fee, VAT and net recorded on every sale. The Watchdog risk score is shown for context only: under this schedule the price depends on the amount alone, so risk does not change what a node is charged.
+      </p>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[820px] text-left text-sm">
+          <thead className="border-b border-slate-800 text-xs uppercase text-slate-400">
+            <tr>
+              {["Node", "Taps", "Volume", "2Pay fee", `VAT ${VAT_PERCENT}%`, "Total deducted", "Effective rate", "Merchants receive", "Risk (1 h, not priced)"].map((h) => (
+                <th key={h} className="px-3 py-2 font-medium">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {nodes.length === 0 && <tr><td colSpan={9} className="px-3 py-6 text-center text-slate-500">No paid sales today.</td></tr>}
+            {nodes.map((n) => (
+              <tr key={n.m.id} className="border-b border-slate-800/60 last:border-0">
+                <td className="px-3 py-2"><div className="font-medium">{n.m.business_name}</div><div className="text-xs text-slate-500">{n.m.terminal_id}{n.legacy > 0 ? ` · ${n.legacy} older sale${n.legacy === 1 ? "" : "s"} without breakdown` : ""}</div></td>
+                <td className="px-3 py-2 tabular-nums">{n.taps}</td>
+                <td className="px-3 py-2 tabular-nums">{fmt(n.gmv)}</td>
+                <td className="px-3 py-2 tabular-nums">{money(n.base)}</td>
+                <td className="px-3 py-2 tabular-nums text-slate-300">{money(n.vat)}</td>
+                <td className="px-3 py-2 font-semibold tabular-nums">{money(n.total)}</td>
+                <td className="px-3 py-2 tabular-nums text-slate-300">{n.rate == null ? "—" : `${n.rate.toFixed(2)}%`}</td>
+                <td className="px-3 py-2 tabular-nums text-emerald-300">{fmt(n.net)}</td>
+                <td className="px-3 py-2 tabular-nums text-slate-400">{n.risk.toFixed(0)} <span className="text-xs text-slate-600">({n.signals} signal{n.signals === 1 ? "" : "s"})</span></td>
+              </tr>
+            ))}
+          </tbody>
+          {nodes.length > 1 && (
+            <tfoot className="border-t border-slate-700 text-sm font-semibold">
+              <tr>
+                <td className="px-3 py-2">All nodes</td><td /><td className="px-3 py-2 tabular-nums">{fmt(totals.gmv)}</td>
+                <td className="px-3 py-2 tabular-nums">{money(totals.base)}</td><td className="px-3 py-2 tabular-nums">{money(totals.vat)}</td><td className="px-3 py-2 tabular-nums">{money(totals.base + totals.vat)}</td>
+                <td /><td className="px-3 py-2 tabular-nums text-emerald-300">{fmt(totals.net)}</td><td />
+              </tr>
+            </tfoot>
+          )}
+        </table>
       </div>
     </section>
   );
