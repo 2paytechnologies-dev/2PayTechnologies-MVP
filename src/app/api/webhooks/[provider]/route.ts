@@ -5,6 +5,7 @@ import { recordWatchdogEvent } from "@/lib/watchdog";
 import { BANKS, WALLETS } from "@/lib/constants";
 import { sendReceiptSms } from "@/lib/receipts";
 import { splitPayment } from "@/lib/team";
+import { emitAiEvent } from "@/lib/ai-events";
 
 export const dynamic = "force-dynamic";
 
@@ -92,7 +93,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ provide
 
   const { data: tx, error: findErr } = await admin
     .from("transactions")
-    .select("id, merchant_id, status, amount, expected_amount, tip_amount, currency, rail")
+    .select("id, merchant_id, status, amount, expected_amount, tip_amount, currency, rail, source, payer_app, settlement_method, rail_provider, ride_session_id, fee_ft")
     .eq("rail_nonce", event.nonce)
     .maybeSingle();
   if (findErr) {
@@ -111,6 +112,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ provide
 
   if (event.status === "FAILED") {
     const { data: failed } = await admin.from("transactions").update({ status: "FAILED" }).eq("id", tx.id).in("status", ["PENDING", "PROCESSING"]).select("id");
+    if (failed?.length) emitAiEvent(admin, "FAILED", tx);
     await note(!!failed?.length, failed?.length ? "marked FAILED" : `ignored: sale already ${tx.status}`, tx.id);
     return NextResponse.json({ acknowledged: true });
   }
@@ -158,6 +160,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ provide
     return NextResponse.json({ acknowledged: true });
   }
 
+  emitAiEvent(admin, "SETTLED", { ...tx, rail: paidVia ?? tx.rail, tip_amount: Number(tx.tip_amount ?? 0) + overpaid }); // for the AI layer, after the response
   // Watchdog: what the rail collected must equal what 2Pay quoted.
   const expected = Number(settled.expected_amount ?? settled.amount);
   let detail = "settled";

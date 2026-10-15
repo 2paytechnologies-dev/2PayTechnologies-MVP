@@ -52,6 +52,25 @@ const EKYC_OTP = "246810";
 const FAN = "1234567812345678";
 const ekyc = await startFakeEkyc({ port: 4050, key: "e2e-ekyc-key", otp: EKYC_OTP, people: { [FAN]: { name: "Bekele Girma", nameAm: "በቀለ ግርማ" }, "8765432187654321": { name: "Almaz Tadesse", nameAm: "አልማዝ ታደሰ" } } });
 
+// --- a pretend AI layer (Google Cloud side): it receives the signed, pseudonymised event batches. `up` lets a test make it unreachable.
+const AI_SECRET = "ai-secret-0123456789abcdef-0123456789";
+const sink = { batches: [], bad: 0, up: true };
+http
+  .createServer((req, res) => {
+    let s = "";
+    req.on("data", (c) => (s += c));
+    req.on("end", () => {
+      if (!sink.up) { res.writeHead(503); return res.end("{}"); }
+      const ts = String(req.headers["x-2pay-timestamp"] ?? "");
+      const want = "sha256=" + createHmac("sha256", AI_SECRET).update(`${ts}.${s}`).digest("hex");
+      if (req.headers["x-2pay-signature"] !== want || Math.abs(Date.now() / 1000 - Number(ts)) > 300) { sink.bad++; res.writeHead(401); return res.end("{}"); }
+      sink.batches.push(JSON.parse(s));
+      res.writeHead(200);
+      res.end("{}");
+    });
+  })
+  .listen(4060);
+
 async function liveSale(merchantCookie, amount, { lang = "en", phone = "0911223344", source = "terminal", terminal = "TRM-0002" } = {}) {
   let token;
   if (source === "static") {
@@ -587,73 +606,56 @@ section("managers: appointed approvers with their own key and phone");
   t("(the owner tidies up the extra bank)", back.status === 200 || back.status === 403);
 }
 
-section("2Pay support: reset a forgotten or locked security key");
+section("forgotten security key: the person resets it themselves (a phone code, then a new key)");
 {
   await fetch(MOCK + "/__reset_limits");
   const BPHONE = "+251911000002";
   const sKeyB = `/api/merchants/${B}/settlement`;
+  const rs = `${sKeyB}/vault/reset`;
   const codeFor = async (phone, from) => { await wait(250); return sms.slice(from).filter((m) => m.to === phone).at(-1)?.message.match(/(\d{6})/)?.[1]; };
-  // business B chooses a key, then forgets it and locks itself out
+  const hashOf = async () => (await db()).merchants.find((m) => m.id === B)?.vault_pin_hash ?? null;
+
+  t("a business that never chose a key chooses one instead of resetting", (await call("POST", `${rs}/request`, { ck: ownerB })).data?.code === "VAULT_NO_PIN");
+  // B chooses a key, then forgets it and locks itself out
   let s0 = sms.length;
   const er = await call("POST", `${sKeyB}/vault/enroll/request`, { ck: ownerB });
-  const ecode = await codeFor(BPHONE, s0);
-  const en = await call("POST", `${sKeyB}/vault/enroll/verify`, { ck: ownerB, body: { challenge_id: er.data?.challenge_id, code: ecode, pin: "615243" } });
-  t("(setup) a business has chosen a key", en.status === 200 && /^scrypt/.test((await db()).merchants.find((m) => m.id === B)?.vault_pin_hash ?? ""));
+  const en = await call("POST", `${sKeyB}/vault/enroll/verify`, { ck: ownerB, body: { challenge_id: er.data?.challenge_id, code: await codeFor(BPHONE, s0), pin: "615243" } });
+  const oldHash = await hashOf();
+  t("(setup) a business has chosen a key", en.status === 200 && /^scrypt/.test(oldHash ?? ""));
   for (let i = 0; i < 5; i++) await call("POST", `${sKeyB}/step-up/request`, { ck: ownerB, body: { pin: "000009" } });
   t("(setup) five wrong keys lock it", (await call("GET", `${sKeyB}/vault`, { ck: ownerB })).data?.locked_minutes > 0);
 
-  const list = await call("GET", "/api/admin/security-keys", { ck: admin });
-  const rowB = list.data?.find?.((r) => r.kind === "OWNER" && r.id === B);
-  t("an admin sees who has a key and who is locked", list.status === 200 && rowB?.has_key === true && !!rowB?.locked_until, JSON.stringify(rowB));
-  t("the list never contains a key or a hash", !JSON.stringify(list.data).match(/scrypt|615243|vault_pin_hash/));
-  t("the owner of another business cannot list", (await call("GET", "/api/admin/security-keys", { ck: ownerA })).status === 403);
-  t("nor can a cashier", (await call("GET", "/api/admin/security-keys", { ck: cashierA })).status === 403);
-  t("an owner cannot reset their own key (that would defeat the second lock)", (await call("POST", "/api/admin/security-keys", { ck: ownerB, body: { kind: "OWNER", id: B, action: "reset", reason: "I forgot it, please reset" } })).status === 403);
-  const post = (body, ck = admin) => call("POST", "/api/admin/security-keys", { ck, body });
-  t("a reset without a written identity check is refused", (await post({ kind: "OWNER", id: B, action: "reset", reason: "ok" })).status === 400);
-  t("a malformed request is refused", (await post({ kind: "ADMIN", id: B, action: "reset", reason: "called the registered number" })).status === 400 && (await post({ kind: "OWNER", id: "nope", action: "reset", reason: "called the registered number" })).status === 400);
-  t("an unknown business is a 404", (await post({ kind: "OWNER", id: "9f9f9f9f-0000-4000-8000-000000000009", action: "reset", reason: "called the registered number" })).status === 404);
+  t("nobody signed in cannot start a reset", (await call("POST", `${rs}/request`)).status === 401);
+  t("a cashier cannot start a reset", (await call("POST", `${rs}/request`, { ck: cashierA })).status === 403);
+  t("another business's owner cannot reset this business's key", (await call("POST", `${rs}/request`, { ck: ownerA })).status === 403);
+  t("the admin hub no longer holds or resets anyone's key", (await call("POST", "/api/admin/security-keys", { ck: admin, body: { kind: "OWNER", id: B, action: "reset", reason: "called the registered number" } })).status === 404);
 
   s0 = sms.length;
-  const reason = "Called the registered number 0911000002 and the owner confirmed the shop details";
-  const reset = await post({ kind: "OWNER", id: B, action: "reset", reason });
-  await wait(300);
-  const afterB = (await db()).merchants.find((m) => m.id === B);
-  t("an admin can reset the owner's key", reset.status === 200 && afterB.vault_pin_hash == null && afterB.vault_failed === 0 && afterB.vault_locked_until == null, JSON.stringify(reset.data));
-  t("the owner is told by SMS", sms.slice(s0).some((m) => m.to === BPHONE && /reset by 2Pay support/i.test(m.message)));
-  t("a second reset has nothing to do", (await post({ kind: "OWNER", id: B, action: "reset", reason })).status === 409);
-  const au = (await db()).audit_log.filter((r) => r.action === "vault.key_reset").at(-1);
-  t("the audit log records who, why and which business", au?.details?.reason === reason && au?.target_id === B && !!au?.actor_phone, JSON.stringify(au));
-  t("the audit entry holds no key", !JSON.stringify(au).match(/615243|scrypt/));
-  // the person must now choose a new key, with a code to their own phone: a reset alone changes nothing about the accounts
-  const gated = await call("PUT", sKeyB, { ck: ownerB, body: { banks: [{ id: "d0d0d0d0-0000-4000-8000-000000000003", institution: "Awash Bank", account_number: "1000987654321" }], wallets: [], active_bank_id: "d0d0d0d0-0000-4000-8000-000000000003", active_wallet_id: null } });
-  t("after a reset, account changes are blocked until a new key is chosen", gated.status === 403 && gated.data?.code === "VAULT_SETUP_REQUIRED");
+  const rq = await call("POST", `${rs}/request`, { ck: ownerB });
+  const rcode = await codeFor(BPHONE, s0);
+  t("a locked-out owner can ask: the code goes only to the registered phone, masked in the reply", rq.status === 200 && !!rcode && sms.slice(s0).every((m) => m.to === BPHONE) && String(rq.data.phone_masked).includes("•••") && !JSON.stringify(rq.data).includes("911000002"), JSON.stringify(rq.data));
+  t("an owner who has not verified Fayda gets the phone check only", rq.data.fayda_check === false);
+  const go = (body) => call("POST", `${rs}/verify`, { ck: ownerB, body: { challenge_id: rq.data.challenge_id, ...body } });
+  t("a wrong code does not change the key", (await go({ code: rcode === "000000" ? "111111" : "000000", pin: "902817" })).status === 400 && (await hashOf()) === oldHash);
+  t("an easy-to-guess new key is refused", (await go({ code: rcode, pin: "111111" })).status === 400 && (await hashOf()) === oldHash);
+  t("a new key that is not 6 digits is refused", (await go({ code: rcode, pin: "12ab56" })).status === 400);
   s0 = sms.length;
-  const er2 = await call("POST", `${sKeyB}/vault/enroll/request`, { ck: ownerB });
-  const ecode2 = await codeFor(BPHONE, s0);
-  t("choosing a new key is allowed again, and the code goes to the owner's phone", er2.status === 200 && !!ecode2 && sms.slice(s0).every((m) => m.to === BPHONE));
-  const en2 = await call("POST", `${sKeyB}/vault/enroll/verify`, { ck: ownerB, body: { challenge_id: er2.data.challenge_id, code: ecode2, pin: "902817" } });
-  t("the new key works", en2.status === 200 && /^scrypt/.test((await db()).merchants.find((m) => m.id === B)?.vault_pin_hash ?? ""));
-
-  // a manager: unlock keeps the key, reset removes it and tells both the manager and the owner
-  const MPH = "+251911000076";
-  const mg = await call("POST", `/api/merchants/${B}/staff`, { ck: ownerB, body: { name: "Hana", phone: "0911000076", role: "MANAGER" } });
-  await fetch(MOCK + `/rest/v1/merchant_staff?id=eq.${mg.data?.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ vault_pin_hash: "scrypt$16384$x$y", vault_failed: 0, vault_locked_until: new Date(Date.now() + 600000).toISOString() }) });
-  const mrow = (await call("GET", "/api/admin/security-keys", { ck: admin })).data?.find?.((r) => r.kind === "MANAGER" && r.id === mg.data?.id);
-  t("managers are listed with their business", mrow?.has_key === true && !!mrow?.locked_until && mrow?.merchant_id === B && /Hana/.test(mrow?.name ?? ""), JSON.stringify(mrow));
-  const un = await post({ kind: "MANAGER", id: mg.data.id, action: "unlock", reason });
-  const mAfterUnlock = (await db()).merchant_staff.find((x) => x.id === mg.data.id);
-  t("unlock clears the lock but keeps the key", un.status === 200 && !!mAfterUnlock.vault_pin_hash && mAfterUnlock.vault_locked_until == null);
-  t("unlocking something that is not locked is refused", (await post({ kind: "MANAGER", id: mg.data.id, action: "unlock", reason })).status === 409);
-  s0 = sms.length;
-  const mr = await post({ kind: "MANAGER", id: mg.data.id, action: "reset", reason });
+  const done = await go({ code: rcode, pin: "902817" });
   await wait(300);
-  t("reset removes a manager's key", mr.status === 200 && (await db()).merchant_staff.find((x) => x.id === mg.data.id).vault_pin_hash == null);
-  t("both the manager and the owner are told", sms.slice(s0).some((m) => m.to === MPH && /reset by 2Pay support/i.test(m.message)) && sms.slice(s0).some((m) => m.to === BPHONE && /reset by 2Pay support/i.test(m.message)));
-  t("a reset cannot reach a manager through the owner's id or another kind", (await post({ kind: "OWNER", id: mg.data.id, action: "reset", reason })).status === 404);
-  await call("DELETE", `/api/merchants/${B}/staff/${mg.data.id}`, { ck: ownerB });
+  const row = (await db()).merchants.find((m) => m.id === B);
+  t("with the right code the key is replaced (a salted hash, never the key)", done.status === 200 && /^scrypt\$16384\$/.test(row.vault_pin_hash) && row.vault_pin_hash !== oldHash && !JSON.stringify(row).includes("902817") && !JSON.stringify(row).includes("615243"));
+  t("the lock and the wrong-key count are cleared", row.vault_failed === 0 && row.vault_locked_until == null && (await call("GET", `${sKeyB}/vault`, { ck: ownerB })).data?.locked_minutes === 0);
+  t("the owner is told by SMS that the key was changed", sms.slice(s0).some((m) => m.to === BPHONE && /security key.*changed/i.test(m.message)));
+  t("the same code cannot be used twice", (await go({ code: rcode, pin: "337155" })).status === 400);
+  t("the OLD key no longer works", (await call("POST", `${sKeyB}/step-up/request`, { ck: ownerB, body: { pin: "615243" } })).data?.code === "VAULT_WRONG_KEY");
+  s0 = sms.length;
+  const unlock = await call("POST", `${sKeyB}/step-up/request`, { ck: ownerB, body: { pin: "902817" } });
+  t("the NEW key works (and sends its code to the registered phone)", unlock.status === 200 && (await codeFor(BPHONE, s0)) !== undefined);
+  const noPass = await call("PUT", sKeyB, { ck: ownerB, body: { banks: [{ id: "d0d0d0d0-0000-4000-8000-000000000003", institution: "Awash Bank", account_number: "1000987654321" }], wallets: [], active_bank_id: "d0d0d0d0-0000-4000-8000-000000000003", active_wallet_id: null } });
+  t("the reset does not open the vault: changing an account still needs the new key and a fresh code", noPass.status === 403 && noPass.data?.code === "STEP_UP_REQUIRED", JSON.stringify(noPass.data));
+  const au = (await db()).audit_log.filter((r) => r.action === "vault.key_reset.self").at(-1);
+  t("the audit log records the reset, and no key", au?.details?.approver === "OWNER" && au?.details?.fayda_checked === false && !JSON.stringify((await db()).audit_log).match(/902817|615243|337155/), JSON.stringify(au));
 }
-
 section("pricing: the tiered fee and VAT are recorded on every sale");
 {
   await fetch(MOCK + "/__reset_limits");
@@ -710,6 +712,36 @@ section("Fayda e-KYC by FAN and a one-time code");
   const after = await verify({ fayda_session_id: a1.data.fayda_session_id, otp: EKYC_OTP }, ownerA);
   t("five wrong codes spend the request, even the right code is then refused", last.status === 400 && after.status === 429 && after.data?.code === "FAYDA_TOO_MANY", JSON.stringify(after.data));
   t("a business that failed is not marked verified", (await db()).merchants.find((x) => x.id === A).fayda_verified !== true);
+  // ---- the forgotten-key check WITH Fayda: business B is verified and its FAN is on record
+  const BPH = "+251911000002";
+  // (the phone's own limit on how many codes it may ask for in a few minutes is real; this test has already used it up, so clear the test codes)
+  await fetch(MOCK + `/rest/v1/otp_challenges?phone=eq.${encodeURIComponent(BPH)}&purpose=eq.stepup`, { method: "DELETE" });
+  const rsB = `/api/merchants/${B}/settlement/vault/reset`;
+  const smsCode = async (phone, from) => { await wait(250); return sms.slice(from).filter((x) => x.to === phone).at(-1)?.message.match(/(\d{6})/)?.[1]; };
+  let from0 = sms.length;
+  const rr = await call("POST", `${rsB}/request`, { ck: ownerB });
+  const phoneCode = await smsCode(BPH, from0);
+  t("a verified owner's forgotten-key check includes Fayda", rr.status === 200 && rr.data.fayda_check === true && !!phoneCode, JSON.stringify(rr.data));
+  const fz = (body, ck = ownerB) => call("POST", `${rsB}/fayda`, { ck, body });
+  t("a FAN in the wrong shape is refused", (await fz({ fan: "12" })).status === 400);
+  const i0 = ekyc.seen.initiate;
+  const wrongFan = await fz({ fan: "8765432187654321" });
+  t("someone else's FAN (even a real one) is refused BEFORE any code is sent", wrongFan.status === 400 && wrongFan.data?.code === "FAYDA_MISMATCH" && ekyc.seen.initiate === i0 && !JSON.stringify(wrongFan.data).includes("8765432187654321"));
+  const initiatedBefore = ekyc.seen.initiate;
+  t("another business's owner cannot use this check", (await call("POST", `${rsB}/fayda`, { ck: ownerA, body: { fan: FAN } })).status === 403);
+  const fs1 = await fz({ fan: FAN });
+  t("the right FAN sends a code to the Fayda-linked phone", fs1.status === 200 && !!fs1.data.fayda_session_id && ekyc.seen.initiate === initiatedBefore + 1 && !JSON.stringify(fs1.data).includes(FAN), JSON.stringify(fs1.data));
+  const go2 = (body) => call("POST", `${rsB}/verify`, { ck: ownerB, body: { challenge_id: rr.data.challenge_id, code: phoneCode, pin: "337155", ...body } });
+  const hashBefore = (await db()).merchants.find((x) => x.id === B).vault_pin_hash;
+  t("without the Fayda code the key is NOT changed", (await go2({})).data?.code === "FAYDA_REQUIRED" && (await db()).merchants.find((x) => x.id === B).vault_pin_hash === hashBefore);
+  t("a wrong Fayda code does not change the key", (await go2({ fayda_session_id: fs1.data.fayda_session_id, fayda_otp: "111111" })).data?.code === "FAYDA_WRONG_CODE" && (await db()).merchants.find((x) => x.id === B).vault_pin_hash === hashBefore);
+  const fin = await go2({ fayda_session_id: fs1.data.fayda_session_id, fayda_otp: EKYC_OTP });
+  const afterB = (await db()).merchants.find((x) => x.id === B);
+  t("with BOTH codes the key is replaced", fin.status === 200 && afterB.vault_pin_hash !== hashBefore && /^scrypt/.test(afterB.vault_pin_hash), JSON.stringify(fin.data));
+  const spentSess = (await db()).fayda_sessions.find((x) => x.id === fs1.data.fayda_session_id);
+  t("the Fayda request is spent and the FAN erased from it", !!spentSess.consumed_at && spentSess.fan_enc == null);
+  t("the new key works, the one before does not", (await call("POST", `/api/merchants/${B}/settlement/step-up/request`, { ck: ownerB, body: { pin: "337155" } })).status === 200 && (await call("POST", `/api/merchants/${B}/settlement/step-up/request`, { ck: ownerB, body: { pin: "902817" } })).data?.code === "VAULT_WRONG_KEY");
+  t("the audit log says Fayda was checked, and holds no FAN or key", (await db()).audit_log.filter((x) => x.action === "vault.key_reset.self").at(-1)?.details?.fayda_checked === true && !JSON.stringify((await db()).audit_log).match(new RegExp(`${FAN}|337155|902817`)));
 }
 
 section("ride-hailing: a driver is paid for a finished trip");
@@ -723,9 +755,15 @@ section("ride-hailing: a driver is paid for a finished trip");
   const status = (tok, extra = "") => call("GET", `${BASEP}/status?session_token=${tok}${extra}`);
 
   // ---- the partner and its key
-  t("an owner cannot create a ride partner", (await call("POST", "/api/admin/ride-partners", { ck: ownerA, body: { name: "Feres", merchant_id: A } })).status === 403);
-  t("a partner needs a name and a merchant", (await call("POST", "/api/admin/ride-partners", { ck: admin, body: { name: "x", merchant_id: A } })).status === 400 && (await call("POST", "/api/admin/ride-partners", { ck: admin, body: { name: "Feres" } })).status === 400);
-  const mk = await call("POST", "/api/admin/ride-partners", { ck: admin, body: { name: "Feres", merchant_id: A } });
+  t("an owner cannot register a ride company", (await call("POST", "/api/admin/ride-partners", { ck: ownerA, body: { name: "Feres" } })).status === 403);
+  t("a company needs a name, and a usable contact number if one is given", (await call("POST", "/api/admin/ride-partners", { ck: admin, body: { name: "x" } })).status === 400 && (await call("POST", "/api/admin/ride-partners", { ck: admin, body: { name: "Feres", contact_phone: "12" } })).status === 400);
+  const merchantsBefore = (await db()).merchants.length;
+  const mk = await call("POST", "/api/admin/ride-partners", { ck: admin, body: { name: "Feres", contact_name: "Tigist", contact_phone: "0911700700" } });
+  const ledgerRec = (await db()).merchants.find((m) => m.kind === "RIDE_PARTNER" && m.business_name === "Feres");
+  t("registering a company needs no merchant: it gets a ledger record of its own", (await db()).merchants.length === merchantsBefore + 1 && !!ledgerRec && ledgerRec.phone == null && ledgerRec.static_qr_enabled === false && ledgerRec.kyc_status === "VERIFIED" && /^RIDE-[0-9A-F]{6}$/.test(ledgerRec.terminal_id), JSON.stringify(ledgerRec));
+  const listA = await call("GET", "/api/merchants", { ck: admin });
+  const portalA = await call("GET", "/api/portal", { ck: admin });
+  t("the ride company never appears in any merchant list", listA.status === 200 && !JSON.stringify(listA.data).includes("Feres") && !JSON.stringify(portalA.data).includes("Feres") && !JSON.stringify(portalA.data).includes("RIDE-"));
   const KEY = mk.data?.api_key;
   t("an admin creates a partner and is shown its API key once", mk.status === 201 && /^2pay_rk_[A-Za-z0-9_-]{43}$/.test(KEY ?? ""));
   t("only a hash of the key is stored, and the key is nowhere else", !JSON.stringify(await db()).includes(KEY) && (await db()).ride_partners.some((p) => p.key_hash === sha(KEY)));
@@ -764,7 +802,7 @@ section("ride-hailing: a driver is paid for a finished trip");
   const m1 = await mint(TOK2);
   const row = (await db()).transactions.find((x) => x.token === m1.data?.token) ?? {};
   t("the driver's phone gets a pay node for the fare", m1.status === 201 && m1.data.amount === 250 && m1.data.source === "RIDE" && m1.data.ride?.partner === "Feres", JSON.stringify(m1.data).slice(0, 160));
-  t("the sale pays the driver's accounts, stored encrypted and never sent back", !("payee_accounts" in m1.data) && /enc:v1:/.test(JSON.stringify(row.payee_accounts)) && !JSON.stringify(row.payee_accounts).match(/911223344|922334455|1320123456789/) && row.ride_session_id === c1.data.session_id && row.merchant_id === A);
+  t("the sale pays the driver's accounts, stored encrypted and never sent back", !("payee_accounts" in m1.data) && /enc:v1:/.test(JSON.stringify(row.payee_accounts)) && !JSON.stringify(row.payee_accounts).match(/911223344|922334455|1320123456789/) && row.ride_session_id === c1.data.session_id && row.merchant_id === ledgerRec.id);
   t("the sale carries the fee breakdown", Number(row.base_fee) === 0.9084 && Number(row.vat_fee) === 0.1363 && Number(row.fee_ft) === 1.0447 && Number(row.net_merchant_settlement) === 248.9553);
 
   // ---- the passenger's phone
@@ -792,8 +830,12 @@ section("ride-hailing: a driver is paid for a finished trip");
   const held = status(TOK2, `&wait=7&sig=${encodeURIComponent(sig1)}`);
   await wait(500);
   const settled = await settle(prow.rail_nonce, 250);
+  const settledAt = Date.now();
   const h = await held;
-  t("the payment clears and the held request is answered within a moment", settled.status === 200 && h.data?.status === "PAID" && !!h.data.paid && Date.now() - t0 < 4000, `${Date.now() - t0} ms ${JSON.stringify(h.data)?.slice(0, 120)}`);
+  // The lag that matters: how long after the provider's callback was accepted did the driver's held request come back? (Negative means it came back first.)
+  const lag = Date.now() - settledAt;
+  console.log(`  (driver screen detection: ${lag} ms after the callback returned; whole exchange ${Date.now() - t0} ms)`);
+  t("the payment clears and the held request is answered within a moment of the callback", settled.status === 200 && h.data?.status === "PAID" && !!h.data.paid && lag < 1000, `${lag} ms after the callback; ${Date.now() - t0} ms in all; ${JSON.stringify(h.data)?.slice(0, 80)}`);
   t("the answer never carries the rail's internals or the driver's accounts", !JSON.stringify(h.data).match(/rail_nonce|rail_session|rail_checkout|payee_accounts|enc:v1/));
 
   // ---- what the partner sees
@@ -803,12 +845,12 @@ section("ride-hailing: a driver is paid for a finished trip");
   t("...and can look a ride up by its own id", byRide.status === 200 && byRide.data.session_id === c1.data.session_id && byRide.data.status === "PAID");
   t("a paid ride cannot be sent again or minted again", (await create(intent, KEY)).data?.code === "ALREADY_PAID" && (await mint(TOK2)).data?.code === "ALREADY_PAID");
   t("a paid ride cannot be cancelled", (await call("DELETE", `${BASEP}/${c1.data.session_id}`, { headers: auth(KEY) })).status === 409);
-  const ledger = await call("GET", `/api/transactions?${new URLSearchParams({ merchant_id: A, from: new Date(Date.now() - 3600_000).toISOString(), to: new Date(Date.now() + 3600_000).toISOString() })}`, { ck: ownerA });
-  const ride = ledger.data.rows.find((r) => r.source === "RIDE");
-  t("the ride is in the partner merchant's ledger, with no stored driver accounts", !!ride && ride.net_merchant_settlement != null && !("payee_accounts" in ride) && !JSON.stringify(ledger.data).match(/enc:v1/));
+  const aLedger = await call("GET", `/api/transactions?${new URLSearchParams({ merchant_id: A, from: new Date(Date.now() - 3600_000).toISOString(), to: new Date(Date.now() + 3600_000).toISOString() })}`, { ck: ownerA });
+  t("the ride is recorded under the ride company, not under any merchant", !aLedger.data.rows.some((r) => r.source === "RIDE") && (await db()).transactions.some((x) => x.source === "RIDE" && x.merchant_id === ledgerRec.id));
+  t("a merchant cannot read the ride company's ledger", (await call("GET", `/api/transactions?${new URLSearchParams({ merchant_id: ledgerRec.id, from: new Date(Date.now() - 3600_000).toISOString(), to: new Date(Date.now() + 3600_000).toISOString() })}`, { ck: ownerA })).status === 403);
 
   // ---- other partners, cancelling, expiry, disabling, rotating
-  const mk2 = await call("POST", "/api/admin/ride-partners", { ck: admin, body: { name: "RIDE", merchant_id: B } });
+  const mk2 = await call("POST", "/api/admin/ride-partners", { ck: admin, body: { name: "RIDE" } });
   t("another partner cannot see this partner's ride", (await call("GET", `${BASEP}/${c1.data.session_id}`, { headers: auth(mk2.data.api_key) })).status === 404);
   const c3 = await create({ ...intent, partner_ride_id: "RIDE-1002", fare_amount: 120 }, KEY);
   const cancel = await call("DELETE", `${BASEP}/${c3.data.session_id}`, { headers: auth(KEY) });
@@ -844,28 +886,99 @@ section("admin hub: network nodes, Fayda tracker and NBE compliance evidence");
   }
 
   const net = await call("GET", "/api/admin/network", { ck: admin });
-  t("network: counts businesses, stands, app phones, partners and drivers", net.status === 200 && net.data.merchants >= 2 && net.data.shop_qr_stands >= 1 && typeof net.data.app_devices === "number" && net.data.ride_partners >= 2 && net.data.ride_checkouts_24h >= 3 && net.data.ride_drivers_24h >= 1 && net.data.ride_available === true, JSON.stringify(net.data));
+  t("network: counts businesses (the ride companies are not businesses), stands, app phones, partners and drivers", net.status === 200 && net.data.merchants === (await db()).merchants.filter((m) => m.kind === "MERCHANT").length && net.data.merchants >= 2 && net.data.shop_qr_stands >= 1 && typeof net.data.app_devices === "number" && net.data.ride_partners >= 2 && net.data.ride_checkouts_24h >= 3 && net.data.ride_drivers_24h >= 1 && net.data.ride_available === true, JSON.stringify(net.data));
   t("network: counts only, no names, phones or keys", !JSON.stringify(net.data).match(/\+251|2pay_rk_|drv-77|Feres/));
 
+  // ---- the totals are added up by the database, not downloaded and counted in the browser
+  const ov = await call("GET", "/api/admin/overview", { ck: admin });
+  const todayPaid = (await db()).transactions.filter((x) => ["SUCCESS", "SETTLED"].includes(x.status) && new Date(x.created_at) >= new Date(Date.now() - 86_400_000));
+  t("overview: the day's totals come from the database and match the ledger", ov.status === 200 && ov.data.stats.taps === todayPaid.length && Math.abs(ov.data.stats.gmv - todayPaid.reduce((s, x) => s + Number(x.amount), 0)) < 0.001 && ov.data.stats.by_source.RIDE?.taps >= 1 && ov.data.stats.by_source.TERMINAL?.taps >= 1, JSON.stringify(ov.data?.stats).slice(0, 200));
+  t("overview: the fee ledger totals add up (fee + VAT, and what merchants receive)", Math.abs(ov.data.stats.fees.base - todayPaid.filter((x) => x.base_fee != null).reduce((s, x) => s + Number(x.base_fee), 0)) < 0.0001 && ov.data.stats.fees.priced_taps >= 1);
+  t("overview: no sales or merchant lists are downloaded (a short list of the busiest nodes, and events with their business names)", !("transactions" in ov.data) && !("merchants" in ov.data) && Array.isArray(ov.data.nodes) && ov.data.nodes.length <= 25 && ov.data.nodes.every((n) => n.business && n.terminal && typeof n.risk === "number"));
+  t("overview: the ride company shows among the nodes by its own name, never as a merchant", ov.data.nodes.some((n) => n.business === "Feres") && !JSON.stringify(ov.data).match(/vault_pin_hash|fayda_fan|enc:v1/));
+  t("overview: an owner cannot read it", (await call("GET", "/api/admin/overview", { ck: ownerA })).status === 403);
   const fy = await call("GET", "/api/admin/fayda", { ck: admin });
   const rowB = fy.data?.rows?.find((r) => r.id === B);
-  const rowA = fy.data?.rows?.find((r) => r.id === A);
+  const fyLocked = await call("GET", "/api/admin/fayda?state=LOCKED", { ck: admin });
+  const rowA = fyLocked.data?.rows?.find((r) => r.id === A);
+  t("Fayda tracker: the ride company is not counted or listed", !JSON.stringify(fy.data).includes("Feres") && fy.data.summary.total === (await db()).merchants.filter((m) => m.kind === "MERCHANT").length);
+  t("Fayda tracker: it pages (25 at a time) and searches by terminal, phone or name", fy.data.paging.page_size === 25 && fy.data.paging.pages >= 1 && (await call("GET", "/api/admin/fayda?q=TRM-0003", { ck: admin })).data.rows.every((r) => r.terminal === "TRM-0003") && (await call("GET", "/api/admin/fayda?q=Shoa", { ck: admin })).data.rows.some((r) => r.id === B) && (await call("GET", "/api/admin/fayda?q=%2B251911000002", { ck: admin })).data.rows.some((r) => r.id === B));
+  t("Fayda tracker: the verified filter lists only verified owners", (await call("GET", "/api/admin/fayda?state=VERIFIED", { ck: admin })).data.rows.every((r) => r.state === "VERIFIED"));
   t("Fayda tracker: totals and set-up state", fy.status === 200 && fy.data.summary.total >= 2 && fy.data.summary.verified >= 1 && fy.data.setup.ekyc === "gateway" && fy.data.setup.required === false, JSON.stringify(fy.data?.summary) + JSON.stringify(fy.data?.setup));
   t("Fayda tracker: the verified owner shows when and the gateway reference", rowB?.state === "VERIFIED" && !!rowB.verified_at && !!rowB.gateway_ref, JSON.stringify(rowB));
   t("Fayda tracker: an owner who used up their wrong codes shows as locked", rowA?.state === "LOCKED" && rowA.wrong_codes >= 5, JSON.stringify(rowA));
   t("Fayda tracker: never shows a FAN, a name or an ID detail", !JSON.stringify(fy.data).match(new RegExp(`${FAN}|Bekele|Girma|fayda_fan|fayda_name|enc:v1`)));
 
   const co = await call("GET", "/api/admin/compliance", { ck: admin });
-  const rideSale = co.data?.sales?.find((s) => s.source === "RIDE");
+  const found = await call("GET", "/api/admin/sales?q=Feres", { ck: admin });
+  const rideSale = found.data?.sales?.find((s) => s.source === "RIDE");
+  t("sales search: a business name finds its sales; an id prefix finds one sale", found.status === 200 && found.data.sales.length >= 1 && found.data.sales.every((s) => s.business === "Feres") && (await call("GET", `/api/admin/sales?q=${rideSale?.id?.slice(0, 8)}`, { ck: admin })).data.sales.some((s) => s.id === rideSale?.id));
+  t("sales search: always a small page", (await call("GET", "/api/admin/sales?limit=5000", { ck: admin })).data.limit === 100 && (await call("GET", "/api/admin/sales", { ck: admin })).data.limit === 25);
+  t("sales search: an owner cannot use it", (await call("GET", "/api/admin/sales", { ck: ownerA })).status === 403);
   t("compliance: paid sales are counted by evidence type", co.status === 200 && co.data.paths.total >= 1 && co.data.paths.provider_confirmed >= 1 && co.data.window_days === 7, JSON.stringify(co.data?.paths));
   t("compliance: the ride sale shows the route payer app -> provider -> driver's account (masked), confirmed by the provider", rideSale?.path === "PROVIDER_CONFIRMED" && rideSale.payer_app === "Telebirr" && !!rideSale.provider && rideSale.to_institution === "Telebirr" && rideSale.to_account === "••••3344" && !!rideSale.confirmed_at, JSON.stringify(rideSale));
   t("compliance: the fee, VAT and merchant net are in the evidence", rideSale?.base_fee === 0.9084 && rideSale.vat_fee === 0.1363 && rideSale.net_to_merchant === 248.9553, JSON.stringify(rideSale));
   t("compliance: funds in flight are reported", typeof co.data.in_flight.count === "number" && typeof co.data.in_flight.amount === "number");
-  t("compliance: phones bound to the app are listed with a short fingerprint only", Array.isArray(co.data.devices) && co.data.devices.length >= 1 && co.data.devices.every((d) => d.device.length === 10 && !("device_id_hash" in d)), JSON.stringify(co.data.devices?.[0]));
+  t("compliance: phones bound to the app are counted and the latest listed with a short fingerprint only", co.data.devices.total >= 1 && co.data.devices.latest.length >= 1 && co.data.devices.latest.every((d) => d.device.length === 10 && !("device_id_hash" in d)), JSON.stringify(co.data.devices?.latest?.[0]));
+  t("compliance: it shows exceptions, not every sale (a short sample, and a page-size cap)", Array.isArray(co.data.exceptions) && co.data.sample.length <= 10 && !("sales" in co.data));
+  const exp = await fetch(BASE + "/api/admin/compliance/export?from=" + new Date(Date.now() - 86_400_000).toISOString().slice(0, 10) + "&to=" + new Date(Date.now() + 86_400_000).toISOString().slice(0, 10), { headers: { cookie: admin, "user-agent": APP_UA } });
+  const csv = await exp.text();
+  const csvLines = csv.trim().split(/\r?\n/);
+  t("export: a CSV file with a header and one row per paid sale in the range, streamed", exp.status === 200 && /text\/csv/.test(exp.headers.get("content-type") ?? "") && /attachment/.test(exp.headers.get("content-disposition") ?? "") && csvLines[0].replace("﻿", "").startsWith("transaction_id,time_utc,business") && csvLines.length - 1 === (await call("GET", "/api/admin/compliance", { ck: admin })).data.paths.total, `${csvLines.length - 1} rows; total ${co.data.paths.total}`);
+  t("export: masked accounts only, and a spreadsheet formula in a cell cannot run", !csv.match(/0911223344|0922334455|01320123456789|1000123456789|enc:v1/) && !csvLines.slice(1).some((l) => /(^|,)[=+@]/.test(l)));
+  t("export: needs dates, a sensible range, an admin, and is audit-logged", (await call("GET", "/api/admin/compliance/export", { ck: admin })).status === 400 && (await call("GET", "/api/admin/compliance/export?from=2020-01-01&to=2026-01-01", { ck: admin })).status === 400 && (await call("GET", "/api/admin/compliance/export?from=2026-01-01&to=2026-01-02", { ck: ownerA })).status === 403 && (await db()).audit_log.some((r) => r.action === "compliance.export"));
   const acts3 = new Set(co.data.controls.map((c) => c.action));
   t("compliance: sensitive changes are listed (accounts, ID checks, partners)", acts3.has("settlement.update") && acts3.has("kyc.fayda.verified") && acts3.has("ride.partner.create"), [...acts3].join(","));
   t("compliance: it states what is built and what is not (no claim of device attestation)", co.data.design.length >= 3 && co.data.not_built.some((x) => /attestation/i.test(x)) && co.data.not_built.some((x) => /statement/i.test(x)));
   t("compliance: no full account number, key, link or FAN anywhere in it", !JSON.stringify(co.data).match(new RegExp(`0911223344|0922334455|01320123456789|1000123456789|${FAN}|2pay_rk_|enc:v1`)));
+}
+
+section("AI layer: pseudonymised events leave in parallel, signed, and scores come back");
+{
+  await fetch(MOCK + "/__reset_limits");
+  await wait(1500); // events are sent right after each sale, after the response
+  const events = sink.batches.flatMap((b) => b.events);
+  const blob = JSON.stringify(events);
+  t("events reached the AI layer, and every batch carried a valid signature", events.length >= 5 && sink.bad === 0 && sink.batches.length >= 1, `${events.length} events, ${sink.bad} bad`);
+  t("they cover the stages of a sale", ["CREATED", "SETTLED"].every((s) => events.some((e) => e.stage === s)), [...new Set(events.map((e) => e.stage))].join(","));
+  t("each event has a version, an id, a time and keyed references instead of ids", events.every((e) => e.v === 1 && /^[0-9a-f-]{36}$/.test(e.event_id) && /^[0-9a-f]{32}$/.test(e.tx) && /^[0-9a-f]{32}$/.test(e.merchant) && !!e.occurred_at));
+  t("the amount is a band, not the figure (level: features)", events.every((e) => typeof e.features.amount_band === "string" && !("amount" in e.features) && !("fee_total" in e.features)));
+  const sale = (await db()).transactions.find((x) => x.source === "RIDE");
+  t("no merchant, sale, phone, account, name, terminal or pay link is in anything sent", !blob.match(new RegExp([A, B, sale.id, sale.token, "0911223344", "911223344", "922334455", "1320123456789", "1000123456789", "NOC Station", "Shoa", "Feres", "TRM-000", "RIDE-", "drv-77", FAN, "enc:v1", "/pay/"].map((x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|"))), blob.slice(0, 200));
+  const outbox = (await db()).ai_event_outbox;
+  t("the outbox keeps the sale reference locally (never sent) and marks what was delivered", outbox.length >= 5 && outbox.filter((o) => o.sent_at).length >= events.length - 1 && outbox.every((o) => /^[0-9a-f]{32}$/.test(o.tx_ref)) && !blob.includes(outbox[0].transaction_id));
+
+  // the AI layer is unreachable: nothing is lost, nothing slows the payment
+  sink.up = false;
+  const before = outbox.length;
+  const slow = Date.now();
+  const sale2 = await call("POST", "/api/transactions", { ck: ownerA, body: { merchant_id: A, amount: 90 } });
+  const took = Date.now() - slow;
+  await wait(1200);
+  const queued = (await db()).ai_event_outbox.filter((o) => !o.sent_at);
+  const after2 = (await db()).ai_event_outbox;
+  t("with the AI layer down, the sale still works and its event waits in the outbox", sale2.status === 201 && took < 4000 && after2.length === before + 1 && queued.length >= 1 && queued.every((o) => o.attempts >= 1 && !!o.last_error), `${took} ms; outbox ${before} -> ${after2.length}; queued ${queued.length}: ${queued.map((o) => `${o.stage}/${o.attempts}/${o.last_error}`).join(" | ")}`);
+  sink.up = true;
+  for (const o of queued) await fetch(MOCK + `/rest/v1/ai_event_outbox?id=eq.${o.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ next_attempt_at: new Date(Date.now() - 1000).toISOString() }) });
+  t("the safety-net job refuses callers without the secret", (await call("GET", "/api/cron/ai-events")).status === 401);
+  const sweep = await call("GET", "/api/cron/ai-events", { headers: { authorization: `Bearer ${CRON}` } });
+  t("...and with it delivers what was waiting", sweep.status === 200 && sweep.data.enabled === true && sweep.data.sent >= 1 && (await db()).ai_event_outbox.every((o) => o.sent_at), JSON.stringify(sweep.data));
+
+  // scores coming back
+  const ref = outbox.find((o) => o.stage === "SETTLED").tx_ref;
+  const signed = (bodyObj, secret = AI_SECRET, ts = String(Math.floor(Date.now() / 1000))) => {
+    const body = JSON.stringify(bodyObj);
+    return { body, headers: { "x-2pay-timestamp": ts, "x-2pay-signature": "sha256=" + createHmac("sha256", secret).update(`${ts}.${body}`).digest("hex"), "Content-Type": "application/json" } };
+  };
+  const post = async (s) => { const r = await fetch(BASE + "/api/ai/score", { method: "POST", headers: { "user-agent": APP_UA, ...s.headers }, body: s.body }); return { status: r.status, data: await r.json().catch(() => null) }; };
+  const good = await post(signed({ scores: [{ tx_ref: ref, score: 83, model: "risk-v1", reasons: ["new device", "amount band unusual"] }] }));
+  const stored = (await db()).ai_scores.find((x) => x.tx_ref === ref);
+  t("a signed score is stored beside the sale it names", good.status === 200 && good.data.accepted === 1 && stored?.score === 83 && stored.model === "risk-v1" && stored.transaction_id === outbox.find((o) => o.tx_ref === ref).transaction_id, JSON.stringify(good.data));
+  t("a wrong signature is refused", (await post(signed({ scores: [{ tx_ref: ref, score: 1, model: "x" }] }, "not-the-secret-0123456789abcdef"))).status === 401);
+  t("an old (replayed) request is refused", (await post(signed({ scores: [{ tx_ref: ref, score: 1, model: "x" }] }, AI_SECRET, String(Math.floor(Date.now() / 1000) - 3600)))).status === 401);
+  t("an unsigned request is refused", (await post({ body: JSON.stringify({ scores: [] }), headers: { "Content-Type": "application/json" } })).status === 401);
+  t("a score out of range, or for an unknown shape, is ignored", (await post(signed({ scores: [{ tx_ref: ref, score: 400, model: "x" }, { tx_ref: "nope", score: 5, model: "x" }] }))).data?.accepted === 0);
+  t("the health check says the AI layer is on, and that it is the whole app (not a split)", (await call("GET", "/api/health")).data.security.aiEvents === "on" && (await call("GET", "/api/health")).data.role === "all");
 }
 
 section("national ID (Fayda): prove the owner is who they say");

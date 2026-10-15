@@ -11,7 +11,7 @@ switches to 2Pay with the fare already filled in and offers the tap and a QR; th
 accounts, and pays from their own app. The money goes to the **driver's** account, not the partner's.
 
 ### Setting a partner up
-Admin hub > **Ride partners** > name + the merchant the rides are recorded under > **Create partner**. The API key (`2pay_rk_...`) is shown **once**; only its
+Admin hub > **Ride partners** > **Register a ride-hailing company** (name, optional contact person and phone). **From V2.6 a company is registered on its own: it is not a merchant, is never picked from a merchant list, and never appears in one.** Registering creates a ledger record of kind `RIDE_PARTNER` for its rides (no phone, so nobody can sign in as it; no shop QR; marked verified because an admin registers it after checking its documents). The API key (`2pay_rk_...`) is shown **once**; only its
 hash is kept. The same tab can switch a partner off at once (its key and every link it already gave out stop working) or rotate its key.
 
 ### The partner's API (server to server)
@@ -68,7 +68,7 @@ paid it answers `409 ALREADY_PAID`; with a payment in progress `409 PAYMENT_IN_P
 - The driver's account numbers are stored **encrypted** (when `DATA_ENCRYPTION_KEY` is set), on the ride and on its sale, and are never returned to any browser, terminal or partner call (only masked).
 - The partner API is rate limited; the link calls are rate limited per network and per link; every ride creation, change and cancellation is audited with masked accounts and never the key or link.
 - **Risk to know about:** the payout accounts are supplied by the partner for each ride, so a partner whose API key is stolen could redirect payouts. Mitigations in place: hashed keys, instant switch-off and rotation, audit. A later hardening step is registering each driver's accounts with 2Pay once and checking rides against them.
-- Rides are recorded in the ledger of the merchant the partner is attached to (the live-payment checks for that merchant, including Fayda, apply).
+- Rides are recorded under the ride company's own ledger record (V2.6). The merchant Fayda owner check does not apply to it (it has no merchant owner who signs in); the business verification check does, and an admin sets it when registering the company.
 
 ---
 

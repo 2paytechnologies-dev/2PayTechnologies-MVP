@@ -7,7 +7,7 @@ export const maxDuration = 15;
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_WAIT_S = 7;
-const CHECK_EVERY_MS = 200;
+const CHECK_EVERY_MS = 150;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const signature = (rows: { id: string; status: string }[]) => rows.map((r) => `${r.id}:${r.status}`).sort().join("|");

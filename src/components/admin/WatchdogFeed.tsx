@@ -3,7 +3,8 @@
 import { useMemo, useState } from "react";
 import { Fuel, Gauge, Landmark, Receipt, ShieldAlert, type LucideIcon } from "lucide-react";
 import { formatEAT } from "@/lib/format";
-import type { Merchant, WatchdogEvent, WatchdogEventType, WatchdogSeverity } from "@/lib/types";
+import type { WatchdogEventType, WatchdogSeverity } from "@/lib/types";
+import type { AdminEvent } from "@/lib/use-overview";
 
 export const EVENT_META: Record<WatchdogEventType, { label: string; blurb: string; icon: LucideIcon }> = {
   VELOCITY_SPIKE: { label: "Velocity Spike", blurb: "Rapid repeated transactions", icon: Gauge },
@@ -22,15 +23,7 @@ const severityStyle: Record<WatchdogSeverity, string> = {
 
 const riskColor = (s: number) => (s >= 80 ? "bg-rose-500" : s >= 60 ? "bg-orange-500" : s >= 40 ? "bg-amber-500" : "bg-emerald-500");
 
-export function WatchdogFeed({
-  events,
-  merchants,
-  error,
-}: {
-  events: WatchdogEvent[];
-  merchants: Record<string, Merchant>;
-  error: string | null;
-}) {
+export function WatchdogFeed({ events, error }: { events: AdminEvent[]; error: string | null }) {
   const [filter, setFilter] = useState<WatchdogEventType | "ALL">("ALL");
 
   const counts = useMemo(() => {
@@ -86,7 +79,6 @@ export function WatchdogFeed({
             {shown.map((e) => {
               const meta = EVENT_META[e.event_type] ?? { label: e.event_type, blurb: "", icon: ShieldAlert };
               const Icon = meta.icon;
-              const m = e.merchant_id ? merchants[e.merchant_id] : null;
               return (
                 <tr key={e.id} className="border-b border-slate-800/60 align-top last:border-0">
                   <td className="whitespace-nowrap px-4 py-3 text-slate-400">{formatEAT(e.created_at)}</td>
@@ -95,8 +87,8 @@ export function WatchdogFeed({
                     <div className="text-xs text-slate-500">{meta.blurb}</div>
                   </td>
                   <td className="px-4 py-3 text-slate-300">
-                    {m ? m.business_name : "—"}
-                    {m && <div className="text-xs text-slate-500">{m.terminal_id}</div>}
+                    {e.business_name ?? "—"}
+                    {e.terminal_id && <div className="text-xs text-slate-500">{e.terminal_id}</div>}
                   </td>
                   <td className="px-4 py-3">
                     <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ring-1 ring-inset ${severityStyle[e.severity] ?? severityStyle.INFO}`}>{e.severity}</span>

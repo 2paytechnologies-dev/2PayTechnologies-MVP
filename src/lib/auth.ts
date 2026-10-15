@@ -2,6 +2,7 @@ import { createHmac, randomInt, timingSafeEqual } from "node:crypto";
 import type { NextResponse } from "next/server";
 import { SESSION_COOKIE, SESSION_TTL_S, signSession } from "@/lib/session";
 import { normalizeWalletNumber } from "@/lib/settlement";
+import { cookieShare } from "@/lib/deploy";
 
 /** Server-only auth helpers (Node runtime). */
 
@@ -46,6 +47,7 @@ export async function attachSession(res: NextResponse, merchantId: string, phone
     sameSite: "lax",
     path: "/",
     maxAge: SESSION_TTL_S,
+    ...cookieShare(), // with the screens and the API on different hosts, one shared parent domain lets both see the sign-in
   });
 }
 

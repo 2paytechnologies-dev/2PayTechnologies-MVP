@@ -10,7 +10,7 @@ import { BrandLogo } from "@/components/BrandLogo";
 import { hueFor } from "@/lib/constants";
 import { LanguageMenu } from "@/components/LanguageMenu";
 import { fmt } from "@/lib/format";
-import { preloadAnnouncement, primeAudio } from "@/lib/chime";
+import { markChimed, playPaymentChime, preloadAnnouncement, primeAudio } from "@/lib/chime";
 import { ALL_PAYER_APPS, POPULAR_PAYER_APPS, type PayerApp } from "@/lib/routing-hub";
 import { useI18n, type Key } from "@/lib/i18n";
 import { localizeError } from "@/lib/i18n/errors";
@@ -148,8 +148,11 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
         if (data.appLink && "app" in choice && data.transfer) setOpening({ app: choice.app, transfer: data.transfer, to: data.to });
         return handOver(data.url, data.appLink); // keep the buttons locked while handing over
       }
+      // The payment has cleared: the chime sounds NOW (the word follows with the receipt on the next screen).
+      playPaymentChime();
+      markChimed(token);
       setState({ kind: "paid", latency: data.latency_ms ?? null, tx: { ...state.tx, rail: data.rail ?? state.tx.rail } });
-      setTimeout(() => router.replace(data.next ?? `/pay/${token}/receipt`), 900); // brief confirmation, then the receipt
+      setTimeout(() => router.replace(data.next ?? `/pay/${token}/receipt`), 450); // a brief confirmation, then the receipt
     } catch (e) {
       setError(localizeError((e as Error).message, t));
       setBusy(null);

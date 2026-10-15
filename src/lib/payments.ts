@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { checkAml, checkVelocity } from "@/lib/watchdog";
 import { saveReceiptContact, sendReceiptSms } from "@/lib/receipts";
 import type { RailMethod } from "@/lib/rails";
+import { emitAiEvent } from "@/lib/ai-events";
 
 export type SimulatedResult =
   | { ok: true; tx: { id: string; merchant_id: string; amount: number; currency: string; latency_ms: number | null; rail: string } }
@@ -32,6 +33,7 @@ export async function authorizeSimulated(admin: SupabaseClient, token: string, m
   } catch (e) {
     console.error("[authorizeSimulated] watchdog skipped:", (e as Error).message);
   }
+  emitAiEvent(admin, "SETTLED", data);
   if (contact) await saveReceiptContact(admin, data.id, contact.phone, contact.lang);
   await sendReceiptSms(admin, data.id);
   return { ok: true, tx: data };

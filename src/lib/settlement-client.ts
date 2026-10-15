@@ -36,7 +36,7 @@ async function call<T>(merchantId: string, path: string, body?: unknown): Promis
   return d as T;
 }
 
-export type Challenge = { challenge_id: string; phone_masked: string; dev_code?: string };
+export type Challenge = { challenge_id: string; phone_masked: string; dev_code?: string; /** the forgotten-key check also includes Fayda */ fayda_check?: boolean };
 
 export const vaultStatus = (m: string) => call<VaultStatus>(m, "vault");
 /** Step 1 of unlocking: the security key. Only a right key makes the server send the code. */
@@ -46,6 +46,10 @@ export const unlockVerify = (m: string, challengeId: string, code: string) => ca
 /** First time: send a code (to the given phone if the business has none yet), then choose the key with that code. */
 export const enrollRequest = (m: string, phone?: string) => call<Challenge>(m, "vault/enroll/request", phone ? { phone } : {});
 export const enrollVerify = (m: string, challengeId: string, code: string, pin: string, phone?: string) => call<{ ok: true }>(m, "vault/enroll/verify", { challenge_id: challengeId, code, pin, ...(phone ? { phone } : {}) });
+/** Forgot the key: a code to the registered phone (and, for an owner verified with Fayda, a Fayda check follows). */
+export const resetRequest = (m: string) => call<Challenge>(m, "vault/reset/request", {});
+export const resetFayda = (m: string, fan: string) => call<{ fayda_session_id: string; phone_hint: string | null }>(m, "vault/reset/fayda", { fan });
+export const resetVerify = (m: string, body: { challenge_id: string; code: string; pin: string; fayda_session_id?: string; fayda_otp?: string }) => call<{ ok: true }>(m, "vault/reset/verify", body);
 async function save(merchantId: string, input: SettlementInput): Promise<SettlementView> {
   const res = await fetch(`/api/merchants/${merchantId}/settlement`, {
     method: "PUT",

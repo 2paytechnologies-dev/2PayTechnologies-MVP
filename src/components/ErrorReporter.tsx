@@ -1,5 +1,7 @@
 "use client";
 
+import { apiUrl } from "@/lib/api-base";
+
 import { useEffect } from "react";
 import { nativeInfo } from "@/lib/native";
 
@@ -7,7 +9,7 @@ import { nativeInfo } from "@/lib/native";
 export function reportError(message: string, stack?: string) {
   try {
     const body = JSON.stringify({ message, stack, url: location.pathname, source: nativeInfo() ? "android" : "web" });
-    if (!navigator.sendBeacon?.("/api/telemetry/error", new Blob([body], { type: "application/json" }))) {
+    if (!navigator.sendBeacon?.(apiUrl("/api/telemetry/error"), new Blob([body], { type: "application/json" }))) {
       void fetch("/api/telemetry/error", { method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: true });
     }
   } catch {

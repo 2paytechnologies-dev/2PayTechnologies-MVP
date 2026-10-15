@@ -30,6 +30,15 @@ export function activeAdapter(): RailAdapter {
  * Public origin for success/cancel/notify URLs. Taken from configuration, never from the request's Host header,
  * so a spoofed header can't redirect payers or provider callbacks elsewhere.
  */
+/**
+ * Where payment providers send their callbacks: the API server (the in-country core when the screens and the API are split), taken from
+ * configuration like publicBaseUrl. Defaults to the same address as the screens.
+ */
+export function apiBaseUrl(): string {
+  const configured = process.env.API_BASE_URL;
+  return configured ? configured.replace(/\/$/, "") : publicBaseUrl();
+}
+
 export function publicBaseUrl(): string {
   const configured = process.env.PUBLIC_BASE_URL ?? (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : "");
   if (configured) return configured.replace(/\/$/, "");

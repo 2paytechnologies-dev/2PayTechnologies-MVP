@@ -5,6 +5,8 @@ import { OTP_MAX_ATTEMPTS, OTP_MAX_REQUESTS, OTP_REQUEST_WINDOW_S, OTP_TTL_S, co
 import { sendStepUpSms, smsConfigured } from "@/lib/sms";
 import { STEP_UP_COOKIE, STEP_UP_TTL_S, signStepUp } from "@/lib/settlement-security";
 import { type Approver } from "@/lib/vault";
+import { tryOpenField } from "@/lib/fieldcrypt";
+import { ekycMode } from "@/lib/fayda-ekyc";
 
 /** The shared pieces of the vault routes: sending the one-time code, checking it, and issuing the pass. */
 
@@ -63,4 +65,15 @@ export function withPass(res: NextResponse, merchantId: string, a: Approver & { 
     maxAge: STEP_UP_TTL_S,
   });
   return res;
+}
+/**
+ * The Fayda FAN the owner verified with, or null when the forgotten-key check cannot include Fayda (the approver is not the owner, no
+ * Fayda gateway is connected, or the owner verified another way and no FAN is on record). Decrypted on the server only, to compare with
+ * what the person types: it never goes into a response.
+ */
+export async function faydaFanOnRecord(admin: SupabaseClient, approver: Approver, merchantId: string): Promise<string | null> {
+  if (approver.kind !== "OWNER" || !ekycMode()) return null;
+  const { data } = await admin.from("merchants").select("fayda_fan, fayda_verified").eq("id", merchantId).maybeSingle();
+  if (!data?.fayda_verified || !data.fayda_fan) return null;
+  return tryOpenField(data.fayda_fan as string, "national-id");
 }

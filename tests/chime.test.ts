@@ -20,9 +20,9 @@ describe("payment announcement", () => {
     expect(u.voice).toBe("en"); // the phone's English voice reads the spelled-out Amharic word
   });
 
-  it("the word follows the chime by 1 to 1.5 seconds", () => {
-    expect(VOICE_DELAY_MS).toBeGreaterThanOrEqual(1000);
-    expect(VOICE_DELAY_MS).toBeLessThanOrEqual(1500);
+  it("the word starts as the chime ends (about half a second), not a second and a half later", () => {
+    expect(VOICE_DELAY_MS).toBeGreaterThanOrEqual(450);
+    expect(VOICE_DELAY_MS).toBeLessThanOrEqual(700);
   });
 
   it("the recorded Amharic word ships with both the website and the Android app", () => {

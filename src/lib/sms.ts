@@ -31,9 +31,9 @@ export const sendOtpSms = (phone: string, code: string) => sendSms(phone, `Your 
 export const sendStepUpSms = (phone: string, code: string) =>
   sendSms(phone, `2Pay code ${code}: to confirm changing where your business receives money. Do not share it. If you did not ask for this, ignore this message. Expires in 5 minutes.\n2Pay ኮድ ${code}፦ ገንዘብ የሚቀበሉበትን ሂሳብ ለመቀየር። ለማንም አይስጡ። ያልጠየቁ ከሆነ ይህን መልእክት ችላ ይበሉ።`);
 
-/** Told to the person (and the owner) when 2Pay support resets a security key, so a reset they did not ask for is noticed at once. */
-export const sendKeyResetSms = (phone: string, business: string, who: string) =>
-  sendSms(phone, `2Pay: the security key for ${who} at ${business} was reset by 2Pay support. You will choose a new key the next time you change a payment account. If you did not ask for this, contact 2Pay support now.\n2Pay፦ የ${business} ${who} ደህንነት ቁልፍ በ2Pay ድጋፍ ዳግም ተጀምሯል። ያልጠየቁ ከሆነ አሁኑኑ 2Pay ድጋፍን ያነጋግሩ።`);
+/** Told to the person (and the owner) when a security key is changed with the forgotten-key check, so a change they did not make is noticed at once. */
+export const sendKeyChangedSms = (phone: string, business: string, who: string) =>
+  sendSms(phone, `2Pay: the security key for ${who} at ${business} was just changed. If this was not you, contact 2Pay support now.\n2Pay፦ የ${business} ${who} ደህንነት ቁልፍ አሁን ተቀይሯል። እርስዎ ካልሆኑ አሁኑኑ 2Pay ድጋፍን ያነጋግሩ።`);
 
 /** Told to the owner after any change to the receiving accounts, so a change they did not make is noticed at once. */
 export const sendSettlementChangedSms = (phone: string, business: string) =>

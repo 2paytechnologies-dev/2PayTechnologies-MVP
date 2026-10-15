@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 15;
 
 const MAX_WAIT_S = 7;
-const CHECK_EVERY_MS = 200;
+const CHECK_EVERY_MS = 150;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**

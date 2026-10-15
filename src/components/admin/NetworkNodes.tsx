@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Car, Nfc, QrCode, Smartphone } from "lucide-react";
 import { LATENCY_TARGET_S } from "@/lib/constants";
 import { fmt } from "@/lib/format";
-import { isPaid, type Merchant, type Transaction } from "@/lib/types";
+import type { DayStats } from "@/lib/admin-types";
 import { cn } from "@/lib/utils";
 
 interface Network {
@@ -25,11 +25,12 @@ const CHANNELS = [
 ] as const;
 
 /**
- * Network telemetry by channel: how many sales, how much value and how fast each kind of node did today, and how many of each
- * kind exist. "Software nodes" are phones running 2Pay (cashier terminals and ride-hailing drivers); "passive stands" are printed QR codes.
- * Sales carry the channel they started on, but not whether a browser or the app was used, so the terminal row covers both.
+ * Network telemetry by channel for today: sales, value and speed for each kind of node, and how many of each kind exist. The figures
+ * come from the database already added up. "Software nodes" are phones running 2Pay (cashier terminals and ride-hailing drivers);
+ * "passive stands" are printed QR codes. A sale records the channel it started on, not whether a browser or the app was used, so the
+ * terminal row covers both.
  */
-export function NetworkNodes({ txs, merchants }: { txs: Transaction[]; merchants: Merchant[] }) {
+export function NetworkNodes({ stats }: { stats: DayStats }) {
   const [net, setNet] = useState<Network | null>(null);
   useEffect(() => {
     let off = false;
@@ -46,23 +47,17 @@ export function NetworkNodes({ txs, merchants }: { txs: Transaction[]; merchants
     };
   }, []);
 
-  const rows = useMemo(() => {
-    const paid = txs.filter((t) => isPaid(t.status));
-    const total = paid.reduce((s, t) => s + Number(t.amount), 0);
-    return CHANNELS.map((c) => {
-      const mine = paid.filter((t) => (t.source ?? "TERMINAL") === c.id);
-      const lats = mine.map((t) => t.latency_ms).filter((l): l is number => l != null);
-      const gmv = mine.reduce((s, t) => s + Number(t.amount), 0);
-      return { ...c, taps: mine.length, gmv, share: total ? (gmv / total) * 100 : 0, nodes: new Set(mine.map((t) => t.merchant_id)).size, latency: lats.length ? lats.reduce((a, b) => a + b, 0) / lats.length / 1000 : null };
-    });
-  }, [txs]);
+  const rows = CHANNELS.map((c) => {
+    const s = stats.by_source[c.id];
+    return { ...c, taps: s?.taps ?? 0, gmv: s?.gmv ?? 0, nodes: s?.nodes ?? 0, share: stats.gmv ? ((s?.gmv ?? 0) / stats.gmv) * 100 : 0, latency: s?.avg_latency_ms == null ? null : s.avg_latency_ms / 1000 };
+  });
 
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
       <h2 className="mb-1 flex items-center gap-2 font-semibold">
         <Smartphone className="h-5 w-5 text-brand" /> Network &amp; node management
       </h2>
-      <p className="mb-4 text-xs text-slate-500">Today (EAT), by how the payment started. {merchants.length} businesses on the network.</p>
+      <p className="mb-4 text-xs text-slate-500">Today (EAT), by how the payment started. {net ? `${net.merchants} businesses on the network.` : ""}</p>
 
       <div className="overflow-x-auto">
         <table className="w-full min-w-[720px] text-left text-sm">
@@ -95,7 +90,7 @@ export function NetworkNodes({ txs, merchants }: { txs: Transaction[]; merchants
         <Stat label="Businesses" value={net?.merchants} />
         <Stat label="Shop-QR stands enabled" value={net?.shop_qr_stands} />
         <Stat label="Phones bound to the 2Pay app" value={net?.app_devices} sub={net ? `${net.app_devices_by_role.WAITER} waiters · ${net.app_devices_by_role.CASHIER} cashiers · ${net.app_devices_by_role.MANAGER} managers` : undefined} />
-        <Stat label="Ride partners (active)" value={net?.ride_partners ?? undefined} />
+        <Stat label="Ride companies (active)" value={net?.ride_partners ?? undefined} />
         <Stat label="Drivers, last 24 h" value={net?.ride_available ? net.ride_drivers_24h : undefined} />
         <Stat label="Ride checkouts, 24 h" value={net?.ride_available ? net.ride_checkouts_24h : undefined} />
       </div>

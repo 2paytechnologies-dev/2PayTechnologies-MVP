@@ -1,112 +1,77 @@
 import { NextResponse } from "next/server";
 import { AdminConfigError, getAdminClient } from "@/lib/supabase-admin";
 import { requireAdmin } from "@/lib/guard";
+import { shapeSale } from "@/lib/compliance-sales";
 
 export const dynamic = "force-dynamic";
 
 const DAY = 86_400_000;
-const PAID = ["SUCCESS", "SETTLED"];
 /** Audit actions that show who changed where money goes, who proved their identity, and who may connect to 2Pay. */
 const CONTROL_ACTIONS = new Set([
-  "settlement.update", "settlement.stepup", "settlement.blocked", "vault.enroll", "vault.key.wrong", "vault.locked", "vault.key_reset", "vault.unlock",
+  "settlement.update", "settlement.stepup", "settlement.blocked", "vault.enroll", "vault.key.wrong", "vault.locked", "vault.key_reset", "vault.key_reset.self", "vault.unlock",
   "kyc.submit", "kyc.verified", "kyc.rejected", "kyc.fayda.initiate", "kyc.fayda.verified", "refund.request", "refund.approved", "refund.refunded",
   "ride.partner.create", "ride.partner.rotate", "ride.partner.enable", "ride.partner.disable", "ride.session.create", "ride.session.cancel", "auth.login",
 ]);
 
-export type PathKind = "PROVIDER_CONFIRMED" | "SIMULATED" | "AWAITING_CALLBACK";
-
 /**
- * The evidence behind the claim "2Pay never holds your money", for the NBE compliance tab. Everything here is read from records the
- * system really keeps: how each paid sale was routed, whether the payment provider's signed callback confirmed it, what is still in
- * flight at a provider, and which phones were bound to the 2Pay app. It is evidence to put in front of an auditor, not a
- * certificate: the proof of zero float is the partner bank's and provider's own statements.
+ * The evidence behind the claim "2Pay never holds your money", for the NBE compliance tab. It is built to stay readable at any volume:
+ *  - SUMMARY numbers computed in the database (paid sales by kind of evidence, funds in flight, mismatches);
+ *  - EXCEPTIONS only: the sales that need a human (no provider confirmation, a differing amount, a payment stuck in flight);
+ *  - a short sample of the latest sales (search and export are separate: /api/admin/sales and /api/admin/compliance/export).
+ * It is evidence for an auditor, not a certificate: the proof of zero float is the partner bank's and provider's own statements.
  */
 export async function GET() {
   const guard = await requireAdmin();
   if (!guard.ok) return guard.res;
   try {
     const admin = getAdminClient();
-    const since = new Date(Date.now() - 7 * DAY).toISOString();
-    const [paid, flight, mism, staff, audit] = await Promise.all([
-      admin
-        .from("transactions")
-        .select("id, merchant_id, created_at, processing_at, settled_at, amount, settled_amount, rail, rail_provider, settlement_method, routed_bank, routed_wallet, source, status, base_fee, vat_fee, net_merchant_settlement, payer_app")
-        .in("status", PAID)
-        .gte("created_at", since)
-        .order("created_at", { ascending: false })
-        .limit(200),
-      admin.from("transactions").select("id, amount, processing_at").eq("status", "PROCESSING").limit(2000),
-      admin.from("watchdog_events").select("id, risk_score", { count: "exact", head: true }).eq("event_type", "SETTLEMENT_MISMATCH").gte("created_at", since),
-      admin.from("merchant_staff").select("id, merchant_id, name, role, team_no, active, activated_at, device_id_hash").limit(2000),
-      admin.from("audit_log").select("*").order("created_at", { ascending: false }).limit(400),
+    const from = new Date(Date.now() - 7 * DAY).toISOString();
+    const [summary, exceptions, sample, staff, audit, counts] = await Promise.all([
+      admin.rpc("admin_compliance_summary", { p_from: from }),
+      admin.rpc("admin_compliance_exceptions", { p_from: from, p_limit: 50 }),
+      admin.rpc("admin_find_sales", { p_q: "", p_from: from, p_to: new Date(Date.now() + DAY).toISOString(), p_limit: 10 }),
+      admin.from("merchant_staff").select("id, merchant_id, name, role, team_no, active, activated_at, device_id_hash").order("activated_at", { ascending: false }).limit(300),
+      admin.from("audit_log").select("*").order("created_at", { ascending: false }).limit(300),
+      admin.rpc("admin_network_counts"),
     ]);
-    if (paid.error) return NextResponse.json({ error: "Could not load the settlement evidence" }, { status: 500 });
+    if (summary.error) {
+      console.error("[admin/compliance]", summary.error.message);
+      return NextResponse.json({ error: "Could not load the settlement evidence. Has supabase/v2_6.sql been run?" }, { status: 500 });
+    }
+    const s = summary.data as { total: number; provider_confirmed: number; simulated: number; awaiting_callback: number; in_flight: { count: number; amount: number; oldest: string | null }; mismatches: number };
 
-    const ids = (paid.data ?? []).map((t) => t.id as string);
-    const events = ids.length ? await admin.from("rail_events").select("transaction_id, provider, signature_ok, applied, received_at").in("transaction_id", ids) : { data: [], error: null };
-    const confirmed = new Map<string, { provider: string; received_at: string }>();
-    for (const e of events.error ? [] : (events.data ?? [])) if (e.signature_ok && e.applied && e.transaction_id) confirmed.set(e.transaction_id as string, { provider: e.provider as string, received_at: e.received_at as string });
-
-    const { data: ms } = await admin.from("merchants").select("id, business_name, terminal_id").limit(5000);
-    const name = new Map((ms ?? []).map((m) => [m.id as string, m]));
-
-    const sales = (paid.data ?? []).map((t) => {
-      const ev = confirmed.get(t.id as string);
-      const path: PathKind = ev ? "PROVIDER_CONFIRMED" : t.rail_provider ? "AWAITING_CALLBACK" : "SIMULATED";
-      const to = t.settlement_method === "BANK" ? t.routed_bank : t.settlement_method === "WALLET" ? t.routed_wallet : (t.routed_wallet ?? t.routed_bank);
-      const m = name.get(t.merchant_id as string);
-      return {
-        id: t.id,
-        time: t.created_at,
-        business: m?.business_name ?? "",
-        terminal: m?.terminal_id ?? "",
-        source: t.source ?? "TERMINAL",
-        amount: Number(t.amount),
-        payer_app: t.payer_app ?? null,
-        provider: t.rail_provider ?? null,
-        to_institution: (to as { institution?: string } | null)?.institution ?? t.rail ?? null,
-        // masked on the sale when it was made; the full number never reaches this screen
-        to_account: (to as { account_masked?: string } | null)?.account_masked ?? null,
-        path,
-        confirmed_at: ev ? (ev.received_at ?? (t.settled_at as string | null) ?? null) : null,
-        seconds_to_settle: t.settled_at && t.processing_at ? Math.max(0, Math.round((new Date(t.settled_at as string).getTime() - new Date(t.processing_at as string).getTime()) / 1000)) : null,
-        amount_matches: t.settled_amount == null ? null : Number(t.settled_amount) === Number(t.amount),
-        base_fee: t.base_fee == null ? null : Number(t.base_fee),
-        vat_fee: t.vat_fee == null ? null : Number(t.vat_fee),
-        net_to_merchant: t.net_merchant_settlement == null ? null : Number(t.net_merchant_settlement),
-      };
-    });
-    const count = (k: PathKind) => sales.filter((s) => s.path === k).length;
-
-    const inFlight = flight.error ? [] : (flight.data ?? []);
-    const oldest = inFlight.map((t) => (t.processing_at ? new Date(t.processing_at as string).getTime() : Date.now())).sort((a, b) => a - b)[0];
-
-    const devices = (staff.error ? [] : (staff.data ?? []))
-      .filter((s) => !!s.device_id_hash)
-      .map((s) => ({
-        name: s.name,
-        role: s.role,
-        team_no: s.team_no,
-        business: name.get(s.merchant_id as string)?.business_name ?? "",
-        active: s.active !== false,
-        activated_at: s.activated_at ?? null,
-        // a short fingerprint: enough to tell two phones apart, never the stored hash itself
-        device: String(s.device_id_hash).slice(0, 10),
-      }));
+    const bound = (staff.error ? [] : (staff.data ?? [])).filter((x) => !!x.device_id_hash);
+    const names = new Map<string, string>();
+    const mids = [...new Set(bound.slice(0, 25).map((x) => x.merchant_id as string))];
+    if (mids.length) {
+      const { data } = await admin.from("merchants").select("id, business_name").in("id", mids);
+      for (const m of data ?? []) names.set(m.id as string, m.business_name as string);
+    }
+    const devices = bound.slice(0, 25).map((x) => ({
+      name: x.name,
+      role: x.role,
+      team_no: x.team_no,
+      business: names.get(x.merchant_id as string) ?? "",
+      active: x.active !== false,
+      activated_at: x.activated_at ?? null,
+      // a short fingerprint: enough to tell two phones apart, never the stored hash itself
+      device: String(x.device_id_hash).slice(0, 10),
+    }));
 
     const controls = (audit.error ? [] : (audit.data ?? []))
       .filter((a) => CONTROL_ACTIONS.has(a.action as string))
-      .slice(0, 100)
+      .slice(0, 50)
       .map((a) => ({ time: a.created_at, action: a.action, actor: a.actor_phone ?? null, role: a.role ?? null, target: `${a.target_type ?? ""} ${String(a.target_id ?? "").slice(0, 8)}`.trim(), ip: a.ip ?? null }));
 
     return NextResponse.json(
       {
         window_days: 7,
-        paths: { total: sales.length, provider_confirmed: count("PROVIDER_CONFIRMED"), simulated: count("SIMULATED"), awaiting_callback: count("AWAITING_CALLBACK") },
-        in_flight: { count: inFlight.length, amount: inFlight.reduce((s, t) => s + Number(t.amount), 0), oldest_minutes: oldest ? Math.round((Date.now() - oldest) / 60_000) : null },
-        settlement_mismatches_7d: mism.error ? null : (mism.count ?? 0),
-        sales,
-        devices,
+        paths: { total: s.total, provider_confirmed: s.provider_confirmed, simulated: s.simulated, awaiting_callback: s.awaiting_callback },
+        in_flight: { count: s.in_flight.count, amount: Number(s.in_flight.amount), oldest_minutes: s.in_flight.oldest ? Math.max(0, Math.round((Date.now() - new Date(s.in_flight.oldest).getTime()) / 60_000)) : null },
+        settlement_mismatches_7d: s.mismatches,
+        exceptions: ((exceptions.data ?? []) as Record<string, unknown>[]).map((e) => ({ id: e.id, time: e.created_at, business: e.business, terminal: e.terminal, amount: Number(e.amount), settled_amount: e.settled_amount == null ? null : Number(e.settled_amount), provider: e.provider ?? null, reason: e.reason })),
+        sample: ((sample.data ?? []) as Record<string, unknown>[]).map(shapeSale),
+        devices: { total: (counts.data as { app_devices?: number } | null)?.app_devices ?? bound.length, latest: devices },
         controls,
         // facts about how the system is built, each checkable in the code; they are design statements, not audited results
         design: [

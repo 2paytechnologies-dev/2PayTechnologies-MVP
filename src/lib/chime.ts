@@ -1,5 +1,6 @@
 /**
- * Sale announcement: a short chime the moment a sale settles, then the word "Paid" ("ተከፍሏል" in Amharic).
+ * Sale announcement: a short chime the moment the payment clears, and the word "Paid" ("ተከፍሏል" in Amharic) with the receipt, which
+ * starts the instant the chime ends so the two never overlap and the voice is never late.
  *
  * Browsers block audio until a user gesture, and the settlement arrives asynchronously, long after the last tap.
  * So the AudioContext is created and resumed on the cashier's FIRST touch (primeAudio), kept running while a sale
@@ -70,8 +71,28 @@ function ensureCtx(): AudioContext | null {
   return ctx;
 }
 
+/** Speech engines start slowly the first time (voices load, the engine spins up). Do that on the first touch, so "Paid" is instant later. */
+let voiceCache: SpeechSynthesisVoice[] = [];
+let speechWarm = false;
+function warmSpeech() {
+  try {
+    const synth = typeof window !== "undefined" ? window.speechSynthesis : undefined;
+    if (!synth) return;
+    voiceCache = synth.getVoices();
+    synth.addEventListener?.("voiceschanged", () => (voiceCache = synth.getVoices()));
+    if (speechWarm) return;
+    speechWarm = true;
+    const u = new SpeechSynthesisUtterance(" ");
+    u.volume = 0;
+    synth.speak(u);
+  } catch {
+    /* speech unavailable */
+  }
+}
+
 export function primeAudio() {
   try {
+    warmSpeech();
     if (!ensureCtx() || !ctx) return;
     preloadAnnouncement();
     if (ctx.state === "suspended") void ctx.resume();
@@ -112,8 +133,9 @@ function tone() {
   });
 }
 
-/** The chime sounds the instant the payment clears; the spoken word follows this long after it starts (the chime itself lasts about half a second). */
-export const VOICE_DELAY_MS = 1500;
+/** The chime lasts about half a second (two soft tones). The spoken word starts the moment it ends: no gap, no overlap. */
+export const CHIME_MS = 550;
+export const VOICE_DELAY_MS = CHIME_MS;
 
 /** What is said, and in which voice. */
 export interface Utterance {
@@ -141,7 +163,7 @@ function speakInBrowser(lang: Lang) {
     if (lang === "am" && playClip()) return;
     const synth = window.speechSynthesis;
     if (!synth) return;
-    const voices = synth.getVoices();
+    const voices = synth.getVoices().length ? synth.getVoices() : voiceCache;
     const find = (tag: string) => voices.find((v) => v.lang.toLowerCase().startsWith(tag));
     const u0 = utteranceFor(lang, !!find("am"));
     const voice = find(u0.voice);
@@ -180,39 +202,92 @@ function speakInApp(lang: Lang) {
   }
 }
 
-/** Chime now; the spoken word VOICE_DELAY_MS later. */
-export function playSettlementChime(lang: Lang = "en") {
+/** The chime: attached to the payment itself, so it sounds the moment the payment clears. */
+export function playPaymentChime() {
   try {
     const native = getNative();
     // The app plays the chime itself (newer builds); the page's own audio is the fallback for browsers and older apps.
     if (native && typeof native.chime === "function") native.chime();
     else tone();
     if (native) native.vibrate(250);
-    setTimeout(() => (native ? speakInApp(lang) : speakInBrowser(lang)), VOICE_DELAY_MS);
   } catch {
     /* ignore */
   }
 }
+
+/** The spoken word: attached to the receipt, so it sounds when the receipt is on screen. */
+export function playReceiptVoice(lang: Lang = "en") {
+  try {
+    if (getNative()) speakInApp(lang);
+    else speakInBrowser(lang);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Chime now; the spoken word when the chime ends. For screens where the payment and its receipt appear together (the merchant's). */
+export function playSettlementChime(lang: Lang = "en") {
+  playPaymentChime();
+  setTimeout(() => playReceiptVoice(lang), VOICE_DELAY_MS);
+}
+
+// The customer's phone plays the chime when the payment clears (on the pay page) and the word with the receipt (on the next page).
+// This remembers, for this payment on this phone, that the chime has already sounded, so the receipt only adds the word.
+const chimedKey = (token: string) => `2pay:chimed:${token}`;
+export function markChimed(token: string) {
+  try {
+    sessionStorage.setItem(chimedKey(token), "1");
+  } catch {
+    /* ignore */
+  }
+}
+export function wasChimed(token: string): boolean {
+  try {
+    return sessionStorage.getItem(chimedKey(token)) === "1";
+  } catch {
+    return false;
+  }
+}
 /**
- * The customer's phone: sound the chime and the spoken word when THEIR receipt is on screen. A browser only allows sound
- * after the person has touched the page; a customer coming back from their bank app has not, so if sound is blocked it starts
- * at their first touch (within 30 seconds) rather than staying silent for good. On the merchant's screens (where the first touch
- * on the app already happened) use playSettlementChime directly.
+ * Run `play` as soon as the browser allows sound. A browser only allows sound after the person has touched the page; a customer
+ * coming back from their bank app has not, so if sound is blocked it starts at their first touch (within 30 seconds) instead of
+ * staying silent for good. Nothing waits when sound is already allowed.
  */
-export function announceWhenAllowed(lang: Lang) {
+function whenAudioAllowed(play: () => void) {
   const c = ensureCtx();
-  if (!c) return void playSettlementChime(lang);
+  if (!c) return void play();
   preloadAnnouncement();
-  void c.resume().catch(() => {});
-  setTimeout(() => {
-    if (c.state === "running") return playSettlementChime(lang);
+  if (c.state === "running") return void play();
+  let done = false;
+  const fire = () => {
+    if (done) return;
+    done = true;
+    play();
+  };
+  const waitForTouch = () => {
+    if (done) return;
     const events = ["pointerdown", "keydown", "touchstart"] as const;
-    const fire = () => {
-      events.forEach((e) => window.removeEventListener(e, fire));
+    const onTouch = () => {
+      events.forEach((e) => window.removeEventListener(e, onTouch));
       primeAudio();
-      playSettlementChime(lang);
+      fire();
     };
-    events.forEach((e) => window.addEventListener(e, fire, { once: true, passive: true }));
-    setTimeout(() => events.forEach((e) => window.removeEventListener(e, fire)), 30_000);
-  }, 150);
+    events.forEach((e) => window.addEventListener(e, onTouch, { once: true, passive: true }));
+    setTimeout(() => events.forEach((e) => window.removeEventListener(e, onTouch)), 30_000);
+  };
+  // resume() answers within a few milliseconds when allowed; with no touch yet it may never answer, so do not wait for it.
+  c.resume().then(() => (c.state === "running" ? fire() : waitForTouch()), waitForTouch);
+  setTimeout(() => {
+    if (!done && c.state !== "running") waitForTouch();
+  }, 80);
+}
+
+/** The customer's receipt: chime and word together (the chime first), as soon as sound is allowed. */
+export function announceWhenAllowed(lang: Lang) {
+  whenAudioAllowed(() => playSettlementChime(lang));
+}
+
+/** The customer's receipt after the chime already sounded when the payment cleared: just the word, as soon as sound is allowed. */
+export function receiptVoiceWhenAllowed(lang: Lang) {
+  whenAudioAllowed(() => playReceiptVoice(lang));
 }

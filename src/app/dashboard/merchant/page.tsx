@@ -183,16 +183,12 @@ export default function MerchantPortalPage() {
               ))}
             </select>
           )}
-          {session?.merchant ? (
-            <button onClick={signOut} className="inline-flex items-center gap-1.5 text-slate-400 hover:text-slate-200" title={t("portal.signedInAs", { name: session.merchant.business_name })}>
-              <LogOut className="h-4 w-4" /> {t("common.signOut")}
-              <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase text-slate-300">{t(role === "OWNER" ? "portal.role.OWNER" : role === "WAITER" ? "portal.role.WAITER" : "portal.role.CASHIER")}</span>
-            </button>
-          ) : (
-            <Link href="/signin" className="inline-flex items-center gap-1.5 text-slate-400 hover:text-slate-200">
-              <LogIn className="h-4 w-4" /> {t("common.signIn")}
-            </Link>
-          )}
+          {/* Inside the terminal you are in, so the button always offers to leave. (In open test mode there is no sign-in session to end:
+              it clears what this phone remembers and returns to the sign-in page.) */}
+          <button onClick={signOut} className="inline-flex items-center gap-1.5 text-slate-400 hover:text-slate-200" title={session?.merchant ? t("portal.signedInAs", { name: session.merchant.business_name }) : undefined}>
+            <LogOut className="h-4 w-4" /> {t("common.signOut")}
+            {session?.merchant && <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] uppercase text-slate-300">{t(role === "OWNER" ? "portal.role.OWNER" : role === "WAITER" ? "portal.role.WAITER" : "portal.role.CASHIER")}</span>}
+          </button>
         </div>
       </header>
 

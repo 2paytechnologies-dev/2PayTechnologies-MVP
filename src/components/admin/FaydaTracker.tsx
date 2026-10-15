@@ -1,11 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { BadgeCheck, Clock, Fingerprint, Loader2, Lock, ShieldQuestion } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { BadgeCheck, ChevronLeft, ChevronRight, Clock, Fingerprint, Loader2, Lock, Search, ShieldQuestion } from "lucide-react";
 import { formatEAT } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 type State = "VERIFIED" | "IN_PROGRESS" | "LOCKED" | "NOT_STARTED";
+type Filter = "ALL" | "VERIFIED" | "PENDING" | "IN_PROGRESS" | "LOCKED";
 interface Row {
   id: string;
   business: string;
@@ -15,13 +16,13 @@ interface Row {
   state: State;
   verified_at: string | null;
   gateway_ref: string | null;
-  last_request: string | null;
   wrong_codes: number;
 }
 interface Data {
   summary: { total: number; verified: number; in_progress: number; locked: number; not_started: number };
   setup: { required: boolean; ekyc: "sandbox" | "gateway" | "off"; browser_signin: boolean };
   rows: Row[];
+  paging: { page: number; pages: number; matching: number };
 }
 
 const META: Record<State, { label: string; cls: string; icon: typeof BadgeCheck }> = {
@@ -32,39 +33,47 @@ const META: Record<State, { label: string; cls: string; icon: typeof BadgeCheck 
 };
 
 /**
- * Fayda (national ID) verification of every primary business owner. Shows who is verified and when, who is part-way, and who has not
- * started, so onboarding can be chased. It never shows a FAN, a name or any ID detail.
+ * Fayda (national ID) verification of business owners, for any number of merchants: counts added up by the database, one page of 25
+ * at a time, and a search to find one merchant. It never shows a FAN, a name or any ID detail.
  */
 export function FaydaTracker() {
   const [d, setD] = useState<Data | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [filter, setFilter] = useState<State | "ALL">("ALL");
+  const [filter, setFilter] = useState<Filter>("ALL");
+  const [page, setPage] = useState(1);
   const [q, setQ] = useState("");
+  const [applied, setApplied] = useState("");
+  const [busy, setBusy] = useState(false);
+
   const load = useCallback(async () => {
+    setBusy(true);
     try {
-      const r = await fetch("/api/admin/fayda", { cache: "no-store" });
+      const r = await fetch(`/api/admin/fayda?${new URLSearchParams({ state: filter, page: String(page), q: applied })}`, { cache: "no-store" });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error ?? "Could not load");
       setD(j);
       setErr(null);
     } catch (e) {
       setErr((e as Error).message);
+    } finally {
+      setBusy(false);
     }
-  }, []);
+  }, [filter, page, applied]);
   useEffect(() => {
     void load();
-    const id = setInterval(load, 15_000);
+    const id = setInterval(load, 20_000);
     return () => clearInterval(id);
   }, [load]);
 
-  const shown = useMemo(() => {
-    const n = q.trim().toLowerCase();
-    return (d?.rows ?? []).filter((r) => (filter === "ALL" || r.state === filter) && (!n || [r.business, r.terminal, r.phone].some((v) => String(v ?? "").toLowerCase().includes(n))));
-  }, [d, filter, q]);
-
   if (!d && !err) return <Loader2 className="mx-auto h-5 w-5 animate-spin text-slate-500" />;
   if (!d) return <p className="rounded-lg bg-rose-500/15 p-3 text-sm text-rose-300">{err}</p>;
-  const pct = d.summary.total ? Math.round((d.summary.verified / d.summary.total) * 100) : 0;
+  const { summary } = d;
+  const pct = summary.total ? Math.round((summary.verified / summary.total) * 100) : 0;
+  const chip = (id: Filter, label: string, n: number) => (
+    <button key={id} onClick={() => { setFilter(id); setPage(1); }} className={cn("rounded-full px-3 py-1 font-medium", filter === id ? "bg-slate-700 text-white" : "bg-slate-950 text-slate-400 hover:text-slate-200")}>
+      {label} · {n.toLocaleString()}
+    </button>
+  );
 
   return (
     <div className="space-y-3">
@@ -80,29 +89,33 @@ export function FaydaTracker() {
 
       <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
         <div className="mb-2 flex items-center justify-between text-sm">
-          <span className="flex items-center gap-2 font-semibold"><Fingerprint className="h-4 w-4 text-brand" /> {d.summary.verified} of {d.summary.total} owners verified</span>
+          <span className="flex items-center gap-2 font-semibold"><Fingerprint className="h-4 w-4 text-brand" /> {summary.verified.toLocaleString()} of {summary.total.toLocaleString()} owners verified</span>
           <span className="tabular-nums text-slate-400">{pct}%</span>
         </div>
         <div className="h-2 overflow-hidden rounded bg-slate-800"><div className="h-full bg-brand" style={{ width: `${pct}%` }} /></div>
       </div>
 
       <div className="flex flex-wrap gap-1 text-xs">
-        {(["ALL", "VERIFIED", "IN_PROGRESS", "LOCKED", "NOT_STARTED"] as const).map((s) => (
-          <button key={s} onClick={() => setFilter(s)} className={cn("rounded-full px-3 py-1 font-medium", filter === s ? "bg-slate-700 text-white" : "bg-slate-950 text-slate-400 hover:text-slate-200")}>
-            {s === "ALL" ? `All · ${d.summary.total}` : `${META[s].label} · ${s === "VERIFIED" ? d.summary.verified : s === "IN_PROGRESS" ? d.summary.in_progress : s === "LOCKED" ? d.summary.locked : d.summary.not_started}`}
-          </button>
-        ))}
+        {chip("ALL", "All", summary.total)}
+        {chip("VERIFIED", "Verified", summary.verified)}
+        {chip("PENDING", "Not verified", summary.total - summary.verified)}
+        {chip("IN_PROGRESS", "Code sent", summary.in_progress)}
+        {chip("LOCKED", "Locked", summary.locked)}
       </div>
-      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search business, terminal or phone" className="h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm" />
+      <form onSubmit={(e) => { e.preventDefault(); setPage(1); setApplied(q.trim()); }} className="flex gap-2">
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a merchant: terminal id (TRM-0002), phone, or part of the name" className="h-10 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm" />
+        <button className="inline-flex h-10 items-center gap-2 rounded-lg bg-slate-700 px-4 text-sm font-semibold text-white"><Search className="h-4 w-4" /> Search</button>
+        {applied && <button type="button" onClick={() => { setQ(""); setApplied(""); setPage(1); }} className="h-10 rounded-lg border border-slate-700 px-3 text-sm text-slate-300">Clear</button>}
+      </form>
 
-      <div className="overflow-x-auto">
+      <div className={cn("overflow-x-auto", busy && "opacity-70")}>
         <table className="w-full min-w-[720px] text-left text-sm">
           <thead className="border-b border-slate-800 text-xs uppercase text-slate-400">
             <tr>{["Business", "Owner phone", "Business KYC", "National ID (Fayda)", "Verified (EAT)", "Gateway reference"].map((h) => <th key={h} className="px-3 py-2 font-medium">{h}</th>)}</tr>
           </thead>
           <tbody>
-            {shown.length === 0 && <tr><td colSpan={6} className="px-3 py-8 text-center text-slate-500">No one matches.</td></tr>}
-            {shown.map((r) => {
+            {d.rows.length === 0 && <tr><td colSpan={6} className="px-3 py-8 text-center text-slate-500">No one matches.</td></tr>}
+            {d.rows.map((r) => {
               const M = META[r.state];
               return (
                 <tr key={r.id} className="border-b border-slate-800/60 last:border-0">
@@ -112,7 +125,6 @@ export function FaydaTracker() {
                   <td className="px-3 py-2">
                     <span className={cn("inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium", M.cls)}><M.icon className="h-3.5 w-3.5" /> {M.label}</span>
                     {r.state === "IN_PROGRESS" && r.wrong_codes > 0 && <div className="mt-1 text-xs text-amber-300">{r.wrong_codes} wrong code{r.wrong_codes === 1 ? "" : "s"}</div>}
-                    {r.last_request && r.state !== "VERIFIED" && <div className="mt-1 text-xs text-slate-500">last request {formatEAT(r.last_request)}</div>}
                   </td>
                   <td className="px-3 py-2 text-slate-300">{r.verified_at ? formatEAT(r.verified_at) : "—"}</td>
                   <td className="px-3 py-2 font-mono text-xs text-slate-400">{r.gateway_ref ? r.gateway_ref.slice(0, 13) : "—"}</td>
@@ -121,6 +133,13 @@ export function FaydaTracker() {
             })}
           </tbody>
         </table>
+      </div>
+      <div className="flex items-center justify-between text-xs text-slate-400">
+        <span>{d.paging.matching.toLocaleString()} match · page {d.paging.page} of {d.paging.pages}</span>
+        <span className="flex gap-2">
+          <button disabled={page <= 1 || busy} onClick={() => setPage((p) => p - 1)} className="inline-flex items-center gap-1 rounded-lg border border-slate-700 px-3 py-1.5 disabled:opacity-40"><ChevronLeft className="h-3.5 w-3.5" /> Previous</button>
+          <button disabled={page >= d.paging.pages || busy} onClick={() => setPage((p) => p + 1)} className="inline-flex items-center gap-1 rounded-lg border border-slate-700 px-3 py-1.5 disabled:opacity-40">Next <ChevronRight className="h-3.5 w-3.5" /></button>
+        </span>
       </div>
       <p className="text-xs text-slate-500">This view never shows a Fayda number, a name or any ID detail; the FAN is kept encrypted on the business record.</p>
     </div>

@@ -1,41 +1,48 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Activity, Banknote, Coins, Gauge, Landmark, ShieldCheck } from "lucide-react";
 import { Logo } from "@/components/Logo";
-import { isPaid, type Merchant } from "@/lib/types";
 import { useOverview } from "@/lib/use-overview";
-import { RailBadge, StatusBadge } from "@/components/RailBadge";
+import { RailBadge } from "@/components/RailBadge";
+import { LATENCY_TARGET_S } from "@/lib/constants";
+import type { SaleEvidence } from "@/lib/compliance-sales";
 
 const fmt = (n: number) => n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 export default function DashboardPage() {
-  const { transactions: txs, merchants: merchantList, error, loaded } = useOverview(5000);
-  const merchants = useMemo(() => Object.fromEntries(merchantList.map((x) => [x.id, x])) as Record<string, Merchant>, [merchantList]);
+  // The totals come from the database already added up; the table is only the latest paid sales (a search for any other is in the admin hub).
+  const { stats, error, loaded } = useOverview(5000);
   const [view, setView] = useState<"live" | "compliance">("live");
-  const stats = useMemo(() => {
-    const ok = txs.filter((t) => isPaid(t.status));
-    const lat = ok.map((t) => t.latency_ms).filter((l): l is number => l != null);
-    return {
-      gmv: ok.reduce((s, t) => s + Number(t.amount), 0),
-      count: txs.length,
-      success: ok.length,
-      avgVelocity: lat.length ? lat.reduce((a, b) => a + b, 0) / lat.length / 1000 : null,
-      fees: ok.reduce((s, t) => s + Number(t.fee_ft), 0),
+  const [latest, setLatest] = useState<SaleEvidence[]>([]);
+  useEffect(() => {
+    let off = false;
+    const load = () =>
+      fetch("/api/admin/sales?limit=25", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => !off && d && setLatest(d.sales))
+        .catch(() => {});
+    void load();
+    const id = setInterval(load, 5000);
+    return () => {
+      off = true;
+      clearInterval(id);
     };
-  }, [txs]);
+  }, []);
 
+  const avgVelocity = stats.avg_latency_ms == null ? null : stats.avg_latency_ms / 1000;
+  const fees = stats.fees.base + stats.fees.vat;
   const cards = [
     { label: "Today's GMV", value: `${fmt(stats.gmv)} ETB`, icon: Banknote },
-    { label: "Total Transactions", value: `${stats.count}`, sub: `${stats.success} settled`, icon: Activity },
+    { label: "Paid Transactions", value: stats.taps.toLocaleString(), sub: `${stats.settled.toLocaleString()} confirmed by the provider`, icon: Activity },
     {
       label: "Avg Velocity",
-      value: stats.avgVelocity == null ? "—" : `${stats.avgVelocity.toFixed(2)}s`,
-      sub: "target < 2s",
+      value: avgVelocity == null ? "—" : `${avgVelocity.toFixed(2)}s`,
+      sub: `target < ${LATENCY_TARGET_S.toFixed(1)}s`,
       icon: Gauge,
-      good: stats.avgVelocity != null && stats.avgVelocity < 2,
+      good: avgVelocity != null && avgVelocity < LATENCY_TARGET_S,
     },
-    { label: "Algorithmic Fees Collected", value: `${fmt(stats.fees)} ETB`, icon: Coins },
+    { label: "Fees Collected (incl. VAT)", value: `${fmt(fees)} ETB`, sub: `${fmt(stats.fees.vat)} ETB of it is VAT`, icon: Coins },
   ];
 
   return (
@@ -49,12 +56,8 @@ export default function DashboardPage() {
         </div>
         <div className="flex rounded-lg bg-slate-900 p-1 text-sm">
           {(["live", "compliance"] as const).map((v) => (
-            <button
-              key={v}
-              onClick={() => setView(v)}
-              className={`rounded-md px-3 py-1.5 font-medium ${view === v ? "bg-slate-700 text-white" : "text-slate-400"}`}
-            >
-              {v === "live" ? "Live Transactions" : "Compliance & Non-Custodial Verification"}
+            <button key={v} onClick={() => setView(v)} className={`rounded-md px-3 py-1.5 font-medium ${view === v ? "bg-slate-700 text-white" : "text-slate-400"}`}>
+              {v === "live" ? "Latest Transactions" : "Compliance & Non-Custodial Verification"}
             </button>
           ))}
         </div>
@@ -80,37 +83,35 @@ export default function DashboardPage() {
           <table className="w-full min-w-[720px] text-left text-sm">
             <thead className="border-b border-slate-800 text-xs uppercase text-slate-400">
               <tr>
-                {["Time", "Merchant", "Amount", "Rail", "Fee", "Latency", "Status"].map((h) => (
+                {["Time", "Merchant", "Amount", "Rail", "Fee (incl. VAT)", "Merchant receives"].map((h) => (
                   <th key={h} className="px-4 py-3 font-medium">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {txs.length === 0 && (
-                <tr><td colSpan={7} className="px-4 py-10 text-center text-slate-500">No transactions yet today — generate one from /terminal.</td></tr>
-              )}
-              {txs.map((t) => (
+              {latest.length === 0 && <tr><td colSpan={6} className="px-4 py-10 text-center text-slate-500">No paid transactions yet. Generate one from /terminal.</td></tr>}
+              {latest.map((t) => (
                 <tr key={t.id} className="border-b border-slate-800/60 last:border-0">
-                  <td className="px-4 py-3 text-slate-400">{new Date(t.created_at).toLocaleTimeString()}</td>
-                  <td className="px-4 py-3">{merchants[t.merchant_id]?.business_name ?? "—"}</td>
-                  <td className="px-4 py-3 font-medium tabular-nums">{fmt(Number(t.amount))} {t.currency}</td>
-                  <td className="px-4 py-3"><RailBadge rail={t.rail} /></td>
-                  <td className="px-4 py-3 tabular-nums text-slate-300">{isPaid(t.status) ? fmt(Number(t.fee_ft)) :"—"}</td>
-                  <td className="px-4 py-3 tabular-nums text-slate-300">{t.latency_ms != null ? `${(t.latency_ms / 1000).toFixed(2)}s` : "—"}</td>
-                  <td className="px-4 py-3"><StatusBadge status={t.status} /></td>
+                  <td className="px-4 py-3 text-slate-400">{new Date(t.time).toLocaleTimeString()}</td>
+                  <td className="px-4 py-3">{t.business || "—"}</td>
+                  <td className="px-4 py-3 font-medium tabular-nums">{fmt(t.amount)} ETB</td>
+                  <td className="px-4 py-3">{t.to_institution ? <RailBadge rail={t.to_institution as never} /> : "—"}</td>
+                  <td className="px-4 py-3 tabular-nums text-slate-300">{t.base_fee == null ? "—" : fmt(t.base_fee + (t.vat_fee ?? 0))}</td>
+                  <td className="px-4 py-3 tabular-nums text-slate-300">{t.net_to_merchant == null ? "—" : fmt(t.net_to_merchant)}</td>
                 </tr>
               ))}
             </tbody>
           </table>
+          <p className="border-t border-slate-800 px-4 py-3 text-xs text-slate-500">The latest 25 paid transactions. Search any transaction, or export a date range, in the admin hub under NBE compliance.</p>
         </section>
       ) : (
-        <Compliance float={0} settled={stats.gmv} fees={stats.fees} />
+        <Compliance settled={stats.gmv} fees={fees} />
       )}
     </main>
   );
 }
 
-function Compliance({ settled, fees }: { float: number; settled: number; fees: number }) {
+function Compliance({ settled, fees }: { settled: number; fees: number }) {
   const hops = [
     { title: "Customer Wallet", body: "Holds funds. Issues inherited biometric / PIN authorization." },
     { title: "2Pay Orchestration", body: "Issues single-use token and routing instruction only. No funds, no ledger of balances.", highlight: true },
@@ -121,19 +122,19 @@ function Compliance({ settled, fees }: { float: number; settled: number; fees: n
     <section className="mt-6 space-y-4">
       <div className="grid gap-3 sm:grid-cols-3">
         <div className="rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-4">
-          <div className="flex items-center gap-2 text-xs text-emerald-300"><ShieldCheck className="h-4 w-4" /> 2Pay Float Held</div>
-          <div className="mt-2 text-3xl font-bold">0.00 ETB</div>
-          <div className="text-xs text-slate-400">Zero-float · non-custodial</div>
+          <div className="flex items-center gap-2 text-xs text-emerald-300"><ShieldCheck className="h-4 w-4" /> Funds held by 2Pay</div>
+          <div className="mt-2 text-2xl font-bold">None, by design</div>
+          <div className="text-xs text-slate-400">2Pay has no balance or wallet table. The evidence is in the admin hub, NBE compliance tab.</div>
         </div>
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-          <div className="flex items-center gap-2 text-xs text-slate-400"><Landmark className="h-4 w-4 text-brand" /> Settled Directly to Merchants</div>
+          <div className="flex items-center gap-2 text-xs text-slate-400"><Landmark className="h-4 w-4 text-brand" /> Paid today, directly to merchants</div>
           <div className="mt-2 text-3xl font-bold tabular-nums">{fmt(settled)} ETB</div>
-          <div className="text-xs text-slate-500">Today, via licensed rails</div>
+          <div className="text-xs text-slate-500">Through the licensed rails</div>
         </div>
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
-          <div className="flex items-center gap-2 text-xs text-slate-400"><Coins className="h-4 w-4 text-brand" /> Fee Revenue</div>
+          <div className="flex items-center gap-2 text-xs text-slate-400"><Coins className="h-4 w-4 text-brand" /> Fee revenue (incl. VAT)</div>
           <div className="mt-2 text-3xl font-bold tabular-nums">{fmt(fees)} ETB</div>
-          <div className="text-xs text-slate-500">Algorithmic fee, billed separately</div>
+          <div className="text-xs text-slate-500">Tiered fee plus 15% VAT, deducted from the merchant</div>
         </div>
       </div>
 

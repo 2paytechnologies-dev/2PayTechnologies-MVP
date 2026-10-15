@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { randomUUID } from "node:crypto";
 import { AdminConfigError, getAdminClient } from "@/lib/supabase-admin";
 import { authorizeSimulated } from "@/lib/payments";
-import { getAdapter, publicBaseUrl, railMode, RailError, registeredIds } from "@/lib/rails";
+import { apiBaseUrl, getAdapter, publicBaseUrl, railMode, RailError, registeredIds } from "@/lib/rails";
 import { candidatesFor, loadHealth, parseRouting, rankProviders, recordAttempt } from "@/lib/rails/router";
 import { normalizePhone } from "@/lib/auth";
 import { clientIp } from "@/lib/audit";
@@ -15,6 +15,7 @@ import { buildEthQr } from "@/lib/ethqr";
 import { referenceFor } from "@/lib/format";
 import { openAccounts, type StoredAccount } from "@/lib/fieldcrypt";
 import { maskAccount, type SavedAccount } from "@/lib/settlement";
+import { emitAiEvent } from "@/lib/ai-events";
 import { chooseDriverAccount, kindOfInstitution } from "@/lib/ride";
 
 export const dynamic = "force-dynamic";
@@ -228,7 +229,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
           success: `${baseUrl}${receiptUrl}`,
           cancel: `${baseUrl}/pay/${token}?cancelled=1`,
           error: `${baseUrl}/pay/${token}?error=1`,
-          notify: adapter.notifyUrl(baseUrl),
+          notify: adapter.notifyUrl(apiBaseUrl()), // the provider calls the API server, wherever the screens are hosted
         },
       });
       providerId = id;
@@ -276,6 +277,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
     return fail("This payment can no longer be started", 409);
   }
 
+  emitAiEvent(admin, "STARTED", { id: tx.id, merchant_id: tx.merchant_id, amount: charge, rail: routed.institution, rail_provider: providerId, settlement_method: method.toUpperCase(), payer_app: payerApp?.name ?? null, tip_amount: tip, source: null, ride_session_id: tx.payee_accounts ? "ride" : null });
   if (payerPhone) await saveReceiptContact(admin, tx.id, payerPhone, lang);
   // Open the CUSTOMER's own app on the right screen, pre-filled, if the operator configured a link for it (RAIL_APP_LINKS).
   // Same bank: its "transfer within the bank". A different bank: its "transfer to other banks" (EthSwitch) screen with the

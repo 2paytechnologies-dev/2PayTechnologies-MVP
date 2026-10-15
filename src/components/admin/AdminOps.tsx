@@ -1,19 +1,18 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { BadgeCheck, Car, ClipboardList, Fingerprint, KeyRound, Landmark, Loader2, RotateCcw, Siren } from "lucide-react";
+import { BadgeCheck, Car, ClipboardList, Fingerprint, Landmark, Loader2, RotateCcw, Siren } from "lucide-react";
 import { FaydaTracker } from "@/components/admin/FaydaTracker";
 import { ComplianceAudit } from "@/components/admin/ComplianceAudit";
 import { fmt, formatEAT } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-type Tab = "refunds" | "kyc" | "fayda" | "nbe" | "keys" | "partners" | "audit" | "errors";
+type Tab = "refunds" | "kyc" | "fayda" | "nbe" | "partners" | "audit" | "errors";
 const TABS: { id: Tab; label: string; icon: typeof RotateCcw }[] = [
   { id: "refunds", label: "Refund requests", icon: RotateCcw },
   { id: "kyc", label: "Verification", icon: BadgeCheck },
   { id: "fayda", label: "Fayda KYC", icon: Fingerprint },
   { id: "nbe", label: "NBE compliance", icon: Landmark },
-  { id: "keys", label: "Security keys", icon: KeyRound },
   { id: "partners", label: "Ride partners", icon: Car },
   { id: "audit", label: "Audit log", icon: ClipboardList },
   { id: "errors", label: "App errors", icon: Siren },
@@ -36,7 +35,6 @@ export function AdminOps() {
         {tab === "kyc" && <Kyc />}
         {tab === "fayda" && <FaydaTracker />}
         {tab === "nbe" && <ComplianceAudit />}
-        {tab === "keys" && <SecurityKeys />}
         {tab === "partners" && <RidePartners />}
         {tab === "audit" && <Table url="/api/admin/audit?limit=100" empty="No audit entries yet." cols={["Time (EAT)", "Actor", "Role", "Action", "Target", "IP", "Details"]} row={(r) => [formatEAT(r.created_at), r.actor_phone ?? "—", r.role ?? "—", r.action, `${r.target_type ?? ""} ${String(r.target_id ?? "").slice(0, 8)}`, r.ip ?? "", JSON.stringify(r.details ?? {})]} />}
         {tab === "errors" && <Table url="/api/admin/errors" empty="No errors reported." cols={["Time (EAT)", "Source", "Message", "Page", "Device"]} row={(r) => [formatEAT(r.created_at), r.source, r.message, r.url ?? "", String(r.user_agent ?? "").slice(0, 60)]} />}
@@ -187,104 +185,17 @@ function Kyc() {
 }
 
 /**
- * Forgotten or locked security keys. A reset only removes the key: the person must then choose a new one, which needs a code
- * sent to their registered phone, so a reset alone never lets anyone change a receiving account. Confirm who is asking FIRST
- * (call the registered number), then write how you confirmed it: it is kept in the audit log, and the owner is texted.
- */
-function SecurityKeys() {
-  const { rows, error, load } = useList("/api/admin/security-keys");
-  const [q, setQ] = useState("");
-  const [open, setOpen] = useState<string | null>(null);
-  const [reason, setReason] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
-  if (!rows) return <Loader2 className="mx-auto h-5 w-5 animate-spin text-slate-500" />;
-
-  const needle = q.trim().toLowerCase();
-  const shown = rows.filter((r) => !needle || [r.business, r.terminal, r.name, r.phone].some((v) => String(v ?? "").toLowerCase().includes(needle)));
-
-  const act = async (r: Row, action: "reset" | "unlock") => {
-    if (reason.trim().length < 10) return setMsg({ ok: false, text: "Write how you confirmed this person's identity (at least 10 characters)." });
-    if (action === "reset" && !window.confirm(`Reset the security key for ${r.name} at ${r.business}? They will need to choose a new key, and the owner will be texted.`)) return;
-    setBusy(true);
-    setMsg(null);
-    try {
-      const res = await fetch("/api/admin/security-keys", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: r.kind, id: r.id, action, reason }) });
-      const d = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(d.error ?? "Failed");
-      setMsg({ ok: true, text: action === "reset" ? `Key reset for ${r.name} at ${r.business}. They choose a new one next time they change an account.` : `Unlocked ${r.name} at ${r.business}.` });
-      setOpen(null);
-      setReason("");
-      await load();
-    } catch (e) {
-      setMsg({ ok: false, text: (e as Error).message });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div className="space-y-3">
-      {error && <p className="rounded-lg bg-rose-500/15 p-3 text-sm text-rose-300">{error}</p>}
-      {msg && <p className={cn("rounded-lg p-3 text-sm", msg.ok ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300")}>{msg.text}</p>}
-      <p className="text-xs text-slate-500">
-        For a forgotten key or a locked vault. Call the registered number and confirm who is asking before you reset. A reset removes the key only: the person chooses a new one with a code sent to their phone.
-      </p>
-      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search business, terminal, name or phone" className="h-10 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm" />
-      {shown.length === 0 && <p className="py-6 text-center text-sm text-slate-500">No one matches.</p>}
-      {shown.map((r) => {
-        const k = `${r.kind}:${r.id}`;
-        const locked = !!r.locked_until;
-        return (
-          <div key={k} className="rounded-xl border border-slate-800 bg-slate-950 p-3 text-sm">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="space-y-0.5">
-                <div className="font-semibold">{r.business} <span className="text-xs font-normal text-slate-500">{r.terminal}</span></div>
-                <div className="text-slate-300">{r.name} · <span className="font-mono text-xs">{r.phone ?? "no phone"}</span></div>
-                <div className="text-xs">
-                  {locked ? <span className="rounded bg-amber-500/20 px-1.5 py-0.5 text-amber-300">Locked until {formatEAT(r.locked_until)}</span> : r.has_key ? <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-emerald-300">Key set</span> : <span className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-400">No key chosen yet</span>}
-                </div>
-              </div>
-              {(r.has_key || locked) && (
-                <button onClick={() => { setOpen(open === k ? null : k); setReason(""); setMsg(null); }} className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-semibold text-white">
-                  {open === k ? "Close" : "Reset or unlock"}
-                </button>
-              )}
-            </div>
-            {open === k && (
-              <div className="mt-3 space-y-2 border-t border-slate-800 pt-3">
-                <input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={300} placeholder="How did you confirm who is asking? (required, kept in the audit log)" className="h-9 w-full rounded-lg border border-slate-700 bg-slate-900 px-2 text-xs" />
-                <div className="flex flex-wrap gap-2">
-                  <button disabled={busy} onClick={() => act(r, "reset")} className="rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">Reset security key</button>
-                  {locked && <button disabled={busy} onClick={() => act(r, "unlock")} className="rounded-lg bg-slate-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">Unlock only (keep the key)</button>}
-                </div>
-              </div>
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/**
- * Ride-hailing partners and their API keys. A key is shown once (when made or rotated): copy it to the partner straight away,
- * because only its hash is kept. Rides land in the ledger of the merchant the partner is attached to.
+ * Ride-hailing companies and their API keys. A company is registered here on its own: it is not a merchant and never appears in the merchant
+ * list. A key is shown once (when made or rotated): copy it to the company straight away, because only its hash is kept.
  */
 function RidePartners() {
   const { rows, error, load } = useList("/api/admin/ride-partners");
-  const [merchants, setMerchants] = useState<Row[]>([]);
   const [name, setName] = useState("");
-  const [merchantId, setMerchantId] = useState("");
+  const [contact, setContact] = useState("");
+  const [phone, setPhone] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [shownKey, setShownKey] = useState<{ label: string; key: string } | null>(null);
-  useEffect(() => {
-    fetch("/api/admin/overview", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((d) => setMerchants(Array.isArray(d.merchants) ? d.merchants : []))
-      .catch(() => {});
-  }, []);
   if (!rows) return <Loader2 className="mx-auto h-5 w-5 animate-spin text-slate-500" />;
 
   const call = async (method: "POST" | "PATCH", body: Record<string, unknown>) => {
@@ -312,39 +223,42 @@ function RidePartners() {
         <div className="space-y-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
           <div className="font-semibold text-amber-200">API key for {shownKey.label} (shown once)</div>
           <code className="block break-all rounded bg-slate-950 p-2 text-xs text-slate-100">{shownKey.key}</code>
-          <p className="text-xs text-amber-200/80">Copy it to the partner now over a secure channel. It cannot be shown again; if it is lost, rotate it.</p>
+          <p className="text-xs text-amber-200/80">Copy it to the company now over a secure channel. It cannot be shown again; if it is lost, rotate it.</p>
           <button onClick={() => setShownKey(null)} className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-semibold text-white">I have copied it</button>
         </div>
       )}
-      <div className="grid gap-2 rounded-xl border border-slate-800 bg-slate-950 p-3 md:grid-cols-[1fr_1fr_auto]">
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Partner name (for example Feres)" maxLength={80} className="h-10 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm" />
-        <select value={merchantId} onChange={(e) => setMerchantId(e.target.value)} className="h-10 rounded-lg border border-slate-700 bg-slate-900 px-2 text-sm">
-          <option value="">Record its rides under…</option>
-          {merchants.map((m) => (
-            <option key={m.id} value={m.id}>{m.business_name} · {m.terminal_id}</option>
-          ))}
-        </select>
-        <button
-          disabled={busy || name.trim().length < 2 || !merchantId}
-          onClick={async () => {
-            const d = await call("POST", { name, merchant_id: merchantId });
-            if (d?.api_key) {
-              setShownKey({ label: String(d.name), key: String(d.api_key) });
-              setName("");
-              setMerchantId("");
-            }
-          }}
-          className="h-10 rounded-lg bg-brand px-4 text-sm font-bold text-slate-950 disabled:opacity-40"
-        >
-          Create partner
-        </button>
+      <div className="rounded-xl border border-slate-800 bg-slate-950 p-3">
+        <div className="mb-2 text-sm font-semibold">Register a ride-hailing company</div>
+        <p className="mb-3 text-xs text-slate-500">Register it only after checking its documents. It gets its own record for its rides; it is not added to the merchant list and nobody can sign in as it.</p>
+        <div className="grid gap-2 md:grid-cols-[1fr_1fr_1fr_auto]">
+          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Company name (for example Feres)" maxLength={80} className="h-10 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm" />
+          <input value={contact} onChange={(e) => setContact(e.target.value)} placeholder="Contact person (optional)" maxLength={80} className="h-10 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm" />
+          <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Contact phone (optional)" maxLength={20} inputMode="tel" className="h-10 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm" />
+          <button
+            disabled={busy || name.trim().length < 2}
+            onClick={async () => {
+              const d = await call("POST", { name, contact_name: contact, contact_phone: phone });
+              if (d?.api_key) {
+                setShownKey({ label: String(d.name), key: String(d.api_key) });
+                setName("");
+                setContact("");
+                setPhone("");
+              }
+            }}
+            className="h-10 rounded-lg bg-brand px-4 text-sm font-bold text-slate-950 disabled:opacity-40"
+          >
+            Register
+          </button>
+        </div>
       </div>
-      {rows.length === 0 && <p className="py-6 text-center text-sm text-slate-500">No partners yet.</p>}
+      {rows.length === 0 && <p className="py-6 text-center text-sm text-slate-500">No companies yet.</p>}
       {rows.map((p) => (
         <div key={p.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-950 p-3 text-sm">
           <div className="space-y-0.5">
             <div className="font-semibold">{p.name} <span className={cn("ml-1 rounded px-1.5 py-0.5 text-xs", p.active ? "bg-emerald-500/15 text-emerald-300" : "bg-slate-800 text-slate-400")}>{p.active ? "Active" : "Disabled"}</span></div>
-            <div className="text-xs text-slate-400">Rides under {p.business} · key …{p.key_hint} · {p.last_used_at ? `last used ${formatEAT(p.last_used_at)}` : "never used"}</div>
+            <div className="text-xs text-slate-400">
+              {p.contact_name ? `${p.contact_name} · ` : ""}{p.contact_phone ? `${p.contact_phone} · ` : ""}key …{p.key_hint} · {p.last_used_at ? `last used ${formatEAT(p.last_used_at)}` : "never used"}
+            </div>
           </div>
           <div className="flex gap-2">
             <button disabled={busy} onClick={() => call("PATCH", { id: p.id, active: !p.active })} className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">{p.active ? "Disable" : "Enable"}</button>

@@ -3,6 +3,7 @@ import "./globals.css";
 import { I18nProvider } from "@/lib/i18n";
 import { PwaRegister } from "@/components/PwaRegister";
 import { ErrorReporter } from "@/components/ErrorReporter";
+import { ApiBase } from "@/components/ApiBase";
 import { APP_BG } from "@/lib/brand";
 
 export const metadata: Metadata = {
@@ -27,6 +28,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en">
       <body>
         <I18nProvider>
+          <ApiBase />
           {children}
           <PwaRegister />
           <ErrorReporter />

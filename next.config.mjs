@@ -5,13 +5,21 @@
  * 'unsafe-inline' needs per-request nonces and is its own change. Development also needs eval for hot reload.
  */
 const dev = process.env.NODE_ENV !== "production";
+// When the screens and the in-country API are on different hosts, the browser may talk to that API host too (and only that one).
+const apiOrigin = (() => {
+  try {
+    return process.env.NEXT_PUBLIC_API_BASE ? new URL(process.env.NEXT_PUBLIC_API_BASE).origin : "";
+  } catch {
+    return "";
+  }
+})();
 const enforced = [
   "default-src 'self'",
   `script-src 'self' 'unsafe-inline'${dev ? " 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob: https:", // merchants' ad pictures are https URLs
   "font-src 'self' data:",
-  `connect-src 'self'${dev ? " ws: wss:" : ""}`,
+  `connect-src 'self'${apiOrigin ? ` ${apiOrigin}` : ""}${dev ? " ws: wss:" : ""}`,
   "media-src 'self' blob:",
   "manifest-src 'self'",
   "worker-src 'self'",

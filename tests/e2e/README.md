@@ -18,6 +18,8 @@ $env:FAYDA_ISSUER="http://localhost:4040"; $env:FAYDA_CLIENT_ID="2pay-e2e"; $env
 $env:FAYDA_PRIVATE_JWK=(Get-Content tests/e2e/fayda-client.jwk.json -Raw)
 # V2.5: the pretend Fayda e-KYC gateway (FAN + code) the tests start on port 4050, and the Fayda gate off so the other tests can sell
 $env:FAYDA_EKYC_URL="http://localhost:4050"; $env:FAYDA_EKYC_KEY="e2e-ekyc-key"; $env:KYC_REQUIRE_FAYDA="false"
+# V2.6: the pretend AI layer the tests start on port 4060 (events are sent to it, signed)
+$env:AI_EVENT_LEVEL="features"; $env:AI_EVENT_SINK_URL="http://localhost:4060"; $env:AI_EVENT_SECRET="ai-secret-0123456789abcdef-0123456789"; $env:AI_PSEUDONYM_KEY="pseudonym-key-0123456789abcdef-0123456789"
 npx next dev -p 3170
 
 # 3. the tests (Node 24+)

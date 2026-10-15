@@ -60,6 +60,11 @@ jobs:
           FAYDA_EKYC_URL: http://localhost:4050
           FAYDA_EKYC_KEY: e2e-ekyc-key
           KYC_REQUIRE_FAYDA: "false"
+          # V2.6: the pretend AI layer the tests start on port 4060
+          AI_EVENT_LEVEL: features
+          AI_EVENT_SINK_URL: http://localhost:4060
+          AI_EVENT_SECRET: ai-secret-0123456789abcdef-0123456789
+          AI_PSEUDONYM_KEY: pseudonym-key-0123456789abcdef-0123456789
       - run: node --experimental-transform-types --no-warnings tests/e2e/e2e.mjs
 
   android:

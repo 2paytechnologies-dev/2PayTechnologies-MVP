@@ -18,6 +18,7 @@ export async function GET() {
     let query = getAdminClient()
       .from("merchants")
       .select("id, business_name, category, terminal_id, location, active_bank, active_wallet")
+      .neq("kind", "RIDE_PARTNER") // ride-hailing companies are not merchants and never appear in a merchant list
       .order("business_name");
     if (authEnforced() && !isAdminPhone(guard.session?.ph)) query = query.eq("id", guard.session!.mid);
 

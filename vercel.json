@@ -1,6 +1,7 @@
 {
   "crons": [
     { "path": "/api/cron/reconcile", "schedule": "0 3 * * *" },
-    { "path": "/api/cron/retention", "schedule": "30 3 * * *" }
+    { "path": "/api/cron/retention", "schedule": "30 3 * * *" },
+    { "path": "/api/cron/ai-events", "schedule": "15 3 * * *" }
   ]
 }

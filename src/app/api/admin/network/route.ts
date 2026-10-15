@@ -1,42 +1,31 @@
-import { NextResponse } from "next/server";
+﻿import { NextResponse } from "next/server";
 import { AdminConfigError, getAdminClient } from "@/lib/supabase-admin";
 import { requireAdmin } from "@/lib/guard";
 
 export const dynamic = "force-dynamic";
 
-const DAY = 86_400_000;
-
 /**
- * What the network is made of, for the admin hub's node view: how many businesses, shop-QR stands, team phones bound to the
- * 2Pay app (the phones that act as NFC tags), ride-hailing partners and the drivers who took a checkout in the last 24 hours.
- * Counts only: no names, numbers or secrets.
+ * What the network is made of, for the admin hub's node view: how many businesses, shop-QR stands, team phones bound to the 2Pay app
+ * (the phones that act as NFC tags), ride-hailing companies and the drivers who took a checkout in the last 24 hours. Counted by the
+ * database, so it is right however large the network grows. Counts only: no names, numbers or secrets.
  */
 export async function GET() {
   const guard = await requireAdmin();
   if (!guard.ok) return guard.res;
   try {
-    const admin = getAdminClient();
-    const since = new Date(Date.now() - DAY).toISOString();
-    const [merchants, staff, partners, rides] = await Promise.all([
-      admin.from("merchants").select("id, static_qr_enabled").limit(5000),
-      admin.from("merchant_staff").select("id, role, active, device_id_hash, activated_at").limit(5000),
-      admin.from("ride_partners").select("id, active").limit(500),
-      admin.from("ride_sessions").select("driver_id, partner_id, created_at, status").gte("created_at", since).limit(5000),
-    ]);
-    if (merchants.error) return NextResponse.json({ error: "Could not load the network" }, { status: 500 });
-    const staffRows = staff.error ? [] : (staff.data ?? []);
-    const rideRows = rides.error ? [] : (rides.data ?? []);
-    const bound = staffRows.filter((s) => !!s.device_id_hash && s.active !== false);
+    const { data, error } = await getAdminClient().rpc("admin_network_counts");
+    if (error || !data) return NextResponse.json({ error: "Could not load the network. Has supabase/v2_6.sql been run?" }, { status: 500 });
+    const c = data as { merchants: number; shop_qr_stands: number; app_devices: number; by_role: Record<string, number>; ride_partners: number; ride_drivers_24h: number; ride_checkouts_24h: number };
     return NextResponse.json(
       {
-        merchants: (merchants.data ?? []).length,
-        shop_qr_stands: (merchants.data ?? []).filter((m) => m.static_qr_enabled !== false).length,
-        app_devices: bound.length,
-        app_devices_by_role: { WAITER: bound.filter((s) => s.role === "WAITER").length, CASHIER: bound.filter((s) => s.role === "CASHIER").length, MANAGER: bound.filter((s) => s.role === "MANAGER").length },
-        ride_partners: partners.error ? null : (partners.data ?? []).filter((p) => p.active).length,
-        ride_drivers_24h: new Set(rideRows.map((r) => `${r.partner_id}:${r.driver_id}`)).size,
-        ride_checkouts_24h: rideRows.length,
-        ride_available: !partners.error && !rides.error,
+        merchants: c.merchants,
+        shop_qr_stands: c.shop_qr_stands,
+        app_devices: c.app_devices,
+        app_devices_by_role: { WAITER: c.by_role.WAITER ?? 0, CASHIER: c.by_role.CASHIER ?? 0, MANAGER: c.by_role.MANAGER ?? 0 },
+        ride_partners: c.ride_partners,
+        ride_drivers_24h: c.ride_drivers_24h,
+        ride_checkouts_24h: c.ride_checkouts_24h,
+        ride_available: true,
       },
       { headers: { "Cache-Control": "private, no-store" } },
     );

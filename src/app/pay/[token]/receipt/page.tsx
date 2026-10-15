@@ -6,7 +6,7 @@ import { Logo } from "@/components/Logo";
 import { LanguageMenu } from "@/components/LanguageMenu";
 import { fmt, formatEAT } from "@/lib/format";
 import { useI18n, type Key } from "@/lib/i18n";
-import { announceWhenAllowed } from "@/lib/chime";
+import { announceWhenAllowed, receiptVoiceWhenAllowed, wasChimed } from "@/lib/chime";
 import type { ReceiptView, ServedAd } from "@/lib/types";
 
 type State = { kind: "loading" } | { kind: "confirming" } | { kind: "ready"; receipt: ReceiptView } | { kind: "error"; key: Key };
@@ -122,12 +122,15 @@ export default function ReceiptPage({ params }: { params: Promise<{ token: strin
     };
   }, [token]);
 
-  // The customer hears it too: the chime the moment their receipt is issued, then the word (in their language).
+  // The customer hears it too: the chime is attached to the payment and the word to the receipt. If the chime already sounded when the
+  // payment cleared on the previous screen, the receipt adds only the word; if the payment was confirmed here (they came back from their
+  // bank or wallet app), the chime and then the word sound as the receipt appears.
   useEffect(() => {
     if (state.kind !== "ready" || announced.current) return;
     announced.current = true;
-    announceWhenAllowed(lang);
-  }, [state.kind, lang]);
+    if (wasChimed(token)) receiptVoiceWhenAllowed(lang);
+    else announceWhenAllowed(lang);
+  }, [state.kind, lang, token]);
 
   // Micro-billing hook: log the impression and bill the campaign once the receipt (and its ad) is on screen.
   const receipt = state.kind === "ready" ? state.receipt : null;

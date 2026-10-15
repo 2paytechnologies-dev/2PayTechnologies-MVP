@@ -4,6 +4,7 @@ import { toMasked, type SavedAccount } from "@/lib/settlement";
 import { railMode } from "@/lib/rails";
 import { openAccount, openAccounts, type StoredAccount } from "@/lib/fieldcrypt";
 import { faydaRequired } from "@/lib/fayda-ekyc";
+import { emitAiEvent } from "@/lib/ai-events";
 import { BANKS } from "@/lib/constants";
 
 /** Postgres 42703 (undefined column) / PostgREST PGRST204 (column missing from schema cache): a migration has not been applied. */
@@ -48,7 +49,7 @@ export async function createPayNode(
 
   const { data: merchant, error: mErr } = await admin
     .from("merchants")
-    .select("id, active_bank, active_wallet, kyc_status, static_qr_enabled, fayda_verified_at, fayda_verified")
+    .select("id, kind, active_bank, active_wallet, kyc_status, static_qr_enabled, fayda_verified_at, fayda_verified")
     .eq("id", merchantId)
     .maybeSingle();
   if (mErr) {
@@ -69,8 +70,9 @@ export async function createPayNode(
     return { ok: false, status: 403, body: { error: "Business verification is required before taking live payments.", code: "KYC_REQUIRED" } };
   }
 
-  // With real money the owner's national ID (Fayda) must also be verified (unless KYC_REQUIRE_FAYDA=false).
-  if (faydaRequired() && !merchant.fayda_verified && !merchant.fayda_verified_at) {
+  // With real money the owner's national ID (Fayda) must also be verified (unless KYC_REQUIRE_FAYDA=false). A ride-hailing company
+  // has no merchant owner who signs in: an admin registers it after checking its documents, and its drivers are paid directly.
+  if (faydaRequired() && merchant.kind !== "RIDE_PARTNER" && !merchant.fayda_verified && !merchant.fayda_verified_at) {
     return { ok: false, status: 403, body: { error: "The owner must verify their national ID (Fayda) before taking live payments.", code: "FAYDA_REQUIRED" } };
   }
 
@@ -123,6 +125,7 @@ export async function createPayNode(
     }
     return { ok: false, status: 500, body: { error: "Could not create pay node" } };
   }
+  emitAiEvent(admin, "CREATED", data as never); // for the AI layer, pseudonymised, after the response; a no-op unless it is switched on
   // The driver's stored accounts stay on the server: they are never part of what a terminal or browser receives.
   const { payee_accounts: _hidden, ...safe } = data as Record<string, unknown>;
   void _hidden;
