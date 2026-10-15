@@ -13,10 +13,11 @@ Work top to bottom. Each section says what turning it on does, so nothing is swi
 6. `supabase/v2_2.sql` : **V2.2 (team members and tips). Run this BEFORE pushing the V2.2 code.** Adds team numbers, activation links (stored as hashes), phone binding, a waiter id and a tip amount on every sale. `/api/health` reports `"schema":"outdated"` and names this file until it has run.
 7. `supabase/v2_3.sql` : **V2.3 (settlement vault and routing hub). Run this BEFORE pushing the V2.3 code.** Adds the owner step-up purpose, a tamper-evident log of every change to the receiving accounts, and the customer's chosen app on each sale.
 8. `supabase/v2_4.sql` : **V2.4 (security vault, managers, national ID, encryption). Run this BEFORE pushing the V2.4 code.** Adds the MANAGER role, the security-key and lock columns, the national ID (Fayda) columns, and the last-four column on the settlement log.
-9. **Deploy this release**, then `supabase/lockdown_reads.sql`. (If you ever re-run `all_migrations.sql` on a live system, run the lockdown again afterwards.) It removes all browser access to your data with the public key and
+9. `supabase/v2_5.sql` : **V2.5 (tiered fees with VAT in the ledger, Fayda FAN e-KYC, ride-hailing partners). Run this BEFORE pushing the V2.5 code.** Adds `base_fee`, `vat_fee` and `net_merchant_settlement` to every sale (and widens `fee_ft`), the Fayda FAN columns and request table, and the ride partner and ride session tables.
+10. **Deploy this release**, then `supabase/lockdown_reads.sql`. (If you ever re-run `all_migrations.sql` on a live system, run the lockdown again afterwards.) It removes all browser access to your data with the public key and
    makes "mark a sale paid" server-only. **Do not run it before deploying**: older pages read the database directly and would break.
 
-(`supabase/all_migrations.sql` bundles steps 1-8, without the lockdown.)
+(`supabase/all_migrations.sql` bundles steps 1-9, without the lockdown.)
 
 ## 2. Environment variables (Vercel, then redeploy)
 
@@ -40,7 +41,11 @@ Work top to bottom. Each section says what turning it on does, so nothing is swi
 | `DATA_ENCRYPTION_KEY_PREV` | only while rotating: put the old key here, set a new `DATA_ENCRYPTION_KEY`, and rows are re-sealed under the new key as they are saved |
 | `FAYDA_ISSUER`, `FAYDA_CLIENT_ID`, `FAYDA_PRIVATE_JWK` | national ID (Fayda) sign-in. Supplied by the National ID Program when your organisation is onboarded; see `docs/SECURITY_V2_4.md` |
 | `FAYDA_REDIRECT_URI`, `FAYDA_SCOPES`, `FAYDA_ACR_VALUES` | optional Fayda settings (default redirect is `PUBLIC_BASE_URL/api/fayda/callback`) |
-| `KYC_REQUIRE_FAYDA=true` | in live mode an owner must have verified their national ID before payments are taken. Leave unset until Fayda is connected |
+| `KYC_REQUIRE_FAYDA` | **V2.5: in live mode the owner's Fayda verification is MANDATORY by default** (no variable needed). Set `KYC_REQUIRE_FAYDA=false` only to relax it deliberately, for example while the Fayda connection is still being arranged |
+| `FAYDA_EKYC_URL`, `FAYDA_EKYC_KEY` | the Fayda e-KYC gateway for the FAN + one-time-code check (from the National ID Program; the request format is theirs, see `docs/RIDE_AND_PRICING_V2_5.md`) |
+| `FAYDA_SANDBOX_MODE=true` | development only: any 16-digit FAN, code `123456`. **Ignored when `RAIL_MODE=live`**, so real money can never be unlocked with it |
+| `RIDE_SESSION_TTL_MINUTES` | how long a ride checkout link stays usable (default 30) |
+| `NEXT_PUBLIC_RAIL_LOGO_CDN` | optional: an `https://` URL containing `{slug}` for bank/wallet logos you are licensed to use. Local logos go in `public/assets/rails/` |
 | `ETS_BANK_CODES` | the EthSwitch bank codes used by "transfer to other bank" links, e.g. `{"Awash Bank":"<code>"}`. Supplied by EthSwitch |
 | `ALLOW_BROWSER_NODES` | leave unset: waiters must use the Android app (set `true` only for testing) |
 | `NEXT_PUBLIC_LEGAL_CONTACT` | contact shown on the Terms and Privacy pages |
@@ -59,6 +64,9 @@ Receipts by SMS and one-time codes both use `SMS_WEBHOOK_URL`. Without it, recei
 - [ ] **Security key + manager (V2.4):** as the owner, set a 6-digit security key (Settings > Receiving accounts); add or remove an account: the app asks for the key AND a code that arrives on the owner's phone. Add a manager (Team tab), have them set their own key, and confirm they can make the same change with their own key and phone, and that a cashier and a waiter cannot. Enter the wrong key 5 times and confirm the 15-minute lock and the SMS to the owner.
 - [ ] **Encryption (V2.4):** `DATA_ENCRYPTION_KEY` is set and backed up. Re-save each existing merchant's receiving accounts and business details once (rows saved before the key was set stay readable but unencrypted until they are saved again). Spot-check in Supabase that `saved_banks` shows `enc:v1:...` for the account number.
 - [ ] **Forgotten security key:** agree who at 2Pay may use the admin hub's **Security keys** tab, and the identity check they must do first (call the registered number). Try a reset on a test business: the owner is texted, and a new key must be chosen with a phone code before any account can change.
+- [ ] **Fees (V2.5):** make a 50, a 300, a 1,000, a 7,500 and a 25,000 ETB test sale and check in the merchant's Sales view and the admin hub's fee panel that the total deducted is 0.575, 1.0632, 1.725, 2.300 and 5.750 ETB (fee + 15% VAT on the fee), and that the merchant receives the rest.
+- [ ] **Fayda is mandatory in live mode (V2.5):** with `RAIL_MODE=live` and no `KYC_REQUIRE_FAYDA` set, an owner who has not verified Fayda gets `FAYDA_REQUIRED` when starting a sale. Verify one owner (Profile > National ID) and confirm sales then work. The gateway details (`FAYDA_EKYC_*`) must be in place first, or no owner can verify.
+- [ ] **Ride-hailing (V2.5):** in the admin hub > Ride partners, create a partner attached to its merchant and give the API key to the partner over a secure channel (it is shown once). Make a test ride with `POST /api/v1/integrations/ride-hailing/session`, open `twopay://checkout?token=...` on a phone with the 2.5.0 app, tap a passenger phone, and check the driver's accounts show on the passenger screen and that the payment reaches the DRIVER. See `docs/RIDE_AND_PRICING_V2_5.md`.
 - [ ] **Waiter app:** install the APK on a real phone, open a waiter's link from SMS / WhatsApp: it opens inside the app, activates, and the phone can tap to pay. Opening the same kind of link in a browser must send the waiter to the app, not activate them.
 - [ ] `https://<site>/.well-known/assetlinks.json` loads (it makes https links open in the app).
 - [ ] An admin phone can open `/dashboard/admin`; a normal merchant is redirected away; one merchant cannot read another's
@@ -97,4 +105,6 @@ Receipts by SMS and one-time codes both use `SMS_WEBHOOK_URL`. Without it, recei
   that removes `unsafe-inline` is the next hardening step.
 - Nine build-time dependency advisories remain (Tailwind/PostCSS chains). They do not run in production; fixing them means a
   major upgrade of Next.js and Tailwind, which should be its own change.
+- **Bank and wallet logos** are not shipped: official marks come from each institution. Until a logo is registered (`public/assets/rails/README.md`), the hub shows a coloured initials badge.
+- **Ride-hailing:** the driver's payout accounts come from the partner for each ride, so a partner whose key is stolen could redirect payouts. Keys are hashed, can be rotated or switched off in the admin hub, and every ride is audited; ask partners to keep the key server-side only, and consider registering each driver's accounts with 2Pay in advance as a later hardening step.
 - No iPhone merchant app, App Clip, USSD or push notifications yet: each needs an outside party (see `docs/ROADMAP_V2_1.md`).

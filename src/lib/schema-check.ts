@@ -12,11 +12,14 @@ const COLUMNS: { table: string; columns: string; migration: string }[] = [
   { table: "transactions", columns: "payer_app", migration: "v2_3.sql" },
   { table: "merchants", columns: "vault_pin_hash, vault_failed, vault_locked_until, fayda_verified_at, fayda_subject_hash, fayda_name", migration: "v2_4.sql" },
   { table: "merchant_staff", columns: "vault_pin_hash, vault_failed, vault_locked_until, fayda_verified_at", migration: "v2_4.sql" },
+  { table: "transactions", columns: "base_fee, vat_fee, net_merchant_settlement, payee_accounts, ride_session_id", migration: "v2_5.sql" },
+  { table: "merchants", columns: "fayda_fan, fayda_verified, fayda_verification_timestamp, fayda_transaction_id", migration: "v2_5.sql" },
 ];
 const TABLES: { table: string; migration: string }[] = [
   { table: "rail_events", migration: "rails_live.sql" },
   ...["payer_contacts", "merchant_staff", "refund_requests", "audit_log", "app_errors", "rail_attempts"].map((table) => ({ table, migration: "v2_1.sql" })),
   { table: "settlement_change_log", migration: "v2_3.sql" },
+  ...["ride_partners", "ride_sessions", "fayda_sessions"].map((table) => ({ table, migration: "v2_5.sql" })),
 ];
 
 export interface SchemaStatus {
@@ -25,7 +28,7 @@ export interface SchemaStatus {
   missing: string[];
 }
 
-const ORDER = ["pilot_reconcile.sql", "multi_rail_routing.sql", "merchant_registration.sql", "rails_live.sql", "v2_1.sql", "v2_2.sql", "v2_3.sql", "v2_4.sql"];
+const ORDER = ["pilot_reconcile.sql", "multi_rail_routing.sql", "merchant_registration.sql", "rails_live.sql", "v2_1.sql", "v2_2.sql", "v2_3.sql", "v2_4.sql", "v2_5.sql"];
 
 /** Asks the database whether every column and table this release uses exists. Names files only, never data. */
 export async function checkSchema(admin: SupabaseClient): Promise<SchemaStatus> {

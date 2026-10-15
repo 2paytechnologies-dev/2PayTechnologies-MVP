@@ -74,6 +74,8 @@ export interface PayView {
   terminal_id: string;
   routed_bank: RoutedAccount | null;
   routed_wallet: RoutedAccount | null;
+  /** Ride-hailing only: every account the driver can be paid on, masked. Absent for an ordinary sale. */
+  payee_options?: { id: string; institution: string; account_masked: string }[];
 }
 
 export type CampaignStatus = "ACTIVE" | "PAUSED" | "EXHAUSTED";

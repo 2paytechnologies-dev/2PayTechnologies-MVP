@@ -14,7 +14,8 @@ import { bankCodeFor, hasLinks, needsPayload, platformOf, resolveAppLink } from 
 import { buildEthQr } from "@/lib/ethqr";
 import { referenceFor } from "@/lib/format";
 import { openAccounts, type StoredAccount } from "@/lib/fieldcrypt";
-import type { SavedAccount } from "@/lib/settlement";
+import { maskAccount, type SavedAccount } from "@/lib/settlement";
+import { chooseDriverAccount, kindOfInstitution } from "@/lib/ride";
 
 export const dynamic = "force-dynamic";
 
@@ -32,6 +33,8 @@ interface Tx {
   status: string;
   expires_at: string;
   merchant_id: string;
+  /** Ride-hailing sales only: the driver's own (encrypted) accounts. They replace the merchant's saved accounts as the payee. */
+  payee_accounts: StoredAccount[] | null;
   routed_bank: { id: string; institution: string } | null;
   routed_wallet: { id: string; institution: string } | null;
   rail_checkout_url: string | null;
@@ -50,6 +53,26 @@ interface MerchantInfo {
 const fail = (error: string, status: number) => NextResponse.json({ error }, { status });
 
 /**
+ * A ride-hailing sale pays the DRIVER, who may have several accounts (for example Telebirr and CBE Birr). The passenger either taps
+ * their own app (the best matching driver account is chosen) or one of the driver's accounts directly (`account_id`). The choice
+ * is written onto the sale, so everything after this (the simulated authorization, the provider session, the app link) pays it.
+ * Returns null for an ordinary sale, `{ error }` for a bad choice, else the chosen account's kind.
+ */
+async function applyPayeeChoice(admin: ReturnType<typeof getAdminClient>, token: string, app: ReturnType<typeof findPayerApp>, accountId: unknown): Promise<null | { error: string } | { method: "bank" | "wallet" }> {
+  const { data } = await admin.from("transactions").select("payee_accounts, status").eq("token", token).maybeSingle();
+  if (!data?.payee_accounts) return null;
+  if (data.status !== "PENDING") return null; // a payer coming back to a started payment keeps the account already chosen
+  const pool = openAccounts(data.payee_accounts as StoredAccount[]);
+  if (typeof accountId === "string" && !pool.some((a) => a.id === accountId)) return { error: "That account is not one of the driver's accounts" };
+  const picked = chooseDriverAccount(app, pool, typeof accountId === "string" ? accountId : null);
+  if (!picked) return { error: "The driver has no payment account" };
+  const method = kindOfInstitution(picked.institution);
+  const masked = { id: picked.id, institution: picked.institution, account_masked: maskAccount(picked.account_number) };
+  await admin.from("transactions").update({ routed_bank: method === "bank" ? masked : null, routed_wallet: method === "wallet" ? masked : null }).eq("token", token).eq("status", "PENDING");
+  return { method };
+}
+
+/**
  * The payer tapped their own bank or wallet app on the grid (`payer_app`), or one of the merchant's two methods (`method`).
  * With `payer_app`, the server picks which of the merchant's active accounts receives the payment (see routing-hub.ts).
  *  simulated mode: authorize at once (no money moves).
@@ -64,7 +87,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
   // The customer's own app, picked from the grid. Only a known national bank or wallet is accepted ("other" = not listed).
   const payerApp = findPayerApp(body?.payer_app);
   if (body?.payer_app !== undefined && body.payer_app !== "other" && !payerApp) return fail("Unknown bank or wallet app", 400);
-  if (!method && !payerApp) return fail("method must be 'bank' or 'wallet', or choose your app", 400);
+  const accountId = body?.account_id;
+  if (!method && !payerApp && accountId === undefined) return fail("method must be 'bank' or 'wallet', or choose your app", 400);
   const lang = body?.lang === "am" ? "am" : "en";
 
   let admin;
@@ -79,6 +103,10 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
   if (!(await rateLimit(admin, `initiate:ip:${clientIp(req)}`, 30, 60)) || !(await rateLimit(admin, `initiate:tx:${token}`, 12, 60))) {
     return fail("Too many attempts. Please wait a moment and try again.", 429);
   }
+
+  const choice = await applyPayeeChoice(admin, token, payerApp, accountId);
+  if (choice && "error" in choice) return fail(choice.error, 400);
+  if (choice) method = choice.method;
 
   const mode = railMode();
   const rawPhone = typeof body?.phone === "string" ? body.phone.trim() : "";
@@ -115,7 +143,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
   const { data, error } = await admin
     .from("transactions")
     .select(
-      "id, token, amount, currency, status, expires_at, merchant_id, routed_bank, routed_wallet, rail_checkout_url, processing_at, merchants(business_name, category, location, saved_banks, saved_wallets)",
+      "id, token, amount, currency, status, expires_at, merchant_id, payee_accounts, routed_bank, routed_wallet, rail_checkout_url, processing_at, merchants(business_name, category, location, saved_banks, saved_wallets)",
     )
     .eq("token", token)
     .maybeSingle();
@@ -149,10 +177,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
   if (!routed) return fail("The merchant does not accept that payment method", 400);
 
   const merchant = Array.isArray(tx.merchants) ? tx.merchants[0] : tx.merchants;
+  // The payee's accounts of one kind: the driver's for a ride, otherwise the merchant's own.
+  const payeeAccounts = (kind: "bank" | "wallet") => (tx.payee_accounts ? openAccounts(tx.payee_accounts).filter((a) => kindOfInstitution(a.institution) === kind) : openAccounts(kind === "bank" ? merchant?.saved_banks : merchant?.saved_wallets));
   const beneficiary =
     method === "bank"
       ? (() => {
-          const acct = openAccounts(merchant?.saved_banks).find((a) => a.id === routed.id);
+          const acct = payeeAccounts("bank").find((a) => a.id === routed.id);
           return acct ? { institution: acct.institution, accountNumber: acct.account_number } : null;
         })()
       : undefined;
@@ -255,7 +285,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ token: 
   const rawLinks = process.env.RAIL_APP_LINKS;
   let appLink: string | undefined;
   if (hasLinks(rawLinks, appName)) {
-    const acct = openAccounts(method === "bank" ? merchant?.saved_banks : merchant?.saved_wallets).find((a) => a.id === routed.id);
+    const acct = payeeAccounts(method).find((a) => a.id === routed.id);
     const ref = referenceFor(tx.id);
     const transfer = transferFor(payerApp, routed.institution, method);
     const payload =

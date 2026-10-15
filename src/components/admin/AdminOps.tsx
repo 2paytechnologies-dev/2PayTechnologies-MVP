@@ -1,15 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { BadgeCheck, ClipboardList, KeyRound, Loader2, RotateCcw, Siren } from "lucide-react";
+import { BadgeCheck, Car, ClipboardList, KeyRound, Loader2, RotateCcw, Siren } from "lucide-react";
 import { fmt, formatEAT } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-type Tab = "refunds" | "kyc" | "keys" | "audit" | "errors";
+type Tab = "refunds" | "kyc" | "keys" | "partners" | "audit" | "errors";
 const TABS: { id: Tab; label: string; icon: typeof RotateCcw }[] = [
   { id: "refunds", label: "Refund requests", icon: RotateCcw },
   { id: "kyc", label: "Verification", icon: BadgeCheck },
   { id: "keys", label: "Security keys", icon: KeyRound },
+  { id: "partners", label: "Ride partners", icon: Car },
   { id: "audit", label: "Audit log", icon: ClipboardList },
   { id: "errors", label: "App errors", icon: Siren },
 ];
@@ -30,6 +31,7 @@ export function AdminOps() {
         {tab === "refunds" && <Refunds />}
         {tab === "kyc" && <Kyc />}
         {tab === "keys" && <SecurityKeys />}
+        {tab === "partners" && <RidePartners />}
         {tab === "audit" && <Table url="/api/admin/audit?limit=100" empty="No audit entries yet." cols={["Time (EAT)", "Actor", "Role", "Action", "Target", "IP", "Details"]} row={(r) => [formatEAT(r.created_at), r.actor_phone ?? "—", r.role ?? "—", r.action, `${r.target_type ?? ""} ${String(r.target_id ?? "").slice(0, 8)}`, r.ip ?? "", JSON.stringify(r.details ?? {})]} />}
         {tab === "errors" && <Table url="/api/admin/errors" empty="No errors reported." cols={["Time (EAT)", "Source", "Message", "Page", "Device"]} row={(r) => [formatEAT(r.created_at), r.source, r.message, r.url ?? "", String(r.user_agent ?? "").slice(0, 60)]} />}
       </div>
@@ -255,6 +257,105 @@ function SecurityKeys() {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * Ride-hailing partners and their API keys. A key is shown once (when made or rotated): copy it to the partner straight away,
+ * because only its hash is kept. Rides land in the ledger of the merchant the partner is attached to.
+ */
+function RidePartners() {
+  const { rows, error, load } = useList("/api/admin/ride-partners");
+  const [merchants, setMerchants] = useState<Row[]>([]);
+  const [name, setName] = useState("");
+  const [merchantId, setMerchantId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [shownKey, setShownKey] = useState<{ label: string; key: string } | null>(null);
+  useEffect(() => {
+    fetch("/api/admin/overview", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => setMerchants(Array.isArray(d.merchants) ? d.merchants : []))
+      .catch(() => {});
+  }, []);
+  if (!rows) return <Loader2 className="mx-auto h-5 w-5 animate-spin text-slate-500" />;
+
+  const call = async (method: "POST" | "PATCH", body: Record<string, unknown>) => {
+    setBusy(true);
+    setMsg(null);
+    try {
+      const res = await fetch("/api/admin/ride-partners", { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error ?? "Failed");
+      await load();
+      return d as Row;
+    } catch (e) {
+      setMsg({ ok: false, text: (e as Error).message });
+      return null;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      {error && <p className="rounded-lg bg-rose-500/15 p-3 text-sm text-rose-300">{error}</p>}
+      {msg && <p className={cn("rounded-lg p-3 text-sm", msg.ok ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300")}>{msg.text}</p>}
+      {shownKey && (
+        <div className="space-y-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+          <div className="font-semibold text-amber-200">API key for {shownKey.label} (shown once)</div>
+          <code className="block break-all rounded bg-slate-950 p-2 text-xs text-slate-100">{shownKey.key}</code>
+          <p className="text-xs text-amber-200/80">Copy it to the partner now over a secure channel. It cannot be shown again; if it is lost, rotate it.</p>
+          <button onClick={() => setShownKey(null)} className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-semibold text-white">I have copied it</button>
+        </div>
+      )}
+      <div className="grid gap-2 rounded-xl border border-slate-800 bg-slate-950 p-3 md:grid-cols-[1fr_1fr_auto]">
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Partner name (for example Feres)" maxLength={80} className="h-10 rounded-lg border border-slate-700 bg-slate-900 px-3 text-sm" />
+        <select value={merchantId} onChange={(e) => setMerchantId(e.target.value)} className="h-10 rounded-lg border border-slate-700 bg-slate-900 px-2 text-sm">
+          <option value="">Record its rides under…</option>
+          {merchants.map((m) => (
+            <option key={m.id} value={m.id}>{m.business_name} · {m.terminal_id}</option>
+          ))}
+        </select>
+        <button
+          disabled={busy || name.trim().length < 2 || !merchantId}
+          onClick={async () => {
+            const d = await call("POST", { name, merchant_id: merchantId });
+            if (d?.api_key) {
+              setShownKey({ label: String(d.name), key: String(d.api_key) });
+              setName("");
+              setMerchantId("");
+            }
+          }}
+          className="h-10 rounded-lg bg-brand px-4 text-sm font-bold text-slate-950 disabled:opacity-40"
+        >
+          Create partner
+        </button>
+      </div>
+      {rows.length === 0 && <p className="py-6 text-center text-sm text-slate-500">No partners yet.</p>}
+      {rows.map((p) => (
+        <div key={p.id} className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-800 bg-slate-950 p-3 text-sm">
+          <div className="space-y-0.5">
+            <div className="font-semibold">{p.name} <span className={cn("ml-1 rounded px-1.5 py-0.5 text-xs", p.active ? "bg-emerald-500/15 text-emerald-300" : "bg-slate-800 text-slate-400")}>{p.active ? "Active" : "Disabled"}</span></div>
+            <div className="text-xs text-slate-400">Rides under {p.business} · key …{p.key_hint} · {p.last_used_at ? `last used ${formatEAT(p.last_used_at)}` : "never used"}</div>
+          </div>
+          <div className="flex gap-2">
+            <button disabled={busy} onClick={() => call("PATCH", { id: p.id, active: !p.active })} className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">{p.active ? "Disable" : "Enable"}</button>
+            <button
+              disabled={busy}
+              onClick={async () => {
+                if (!window.confirm(`Rotate the key for ${p.name}? The current key stops working immediately.`)) return;
+                const d = await call("PATCH", { id: p.id, rotate: true });
+                if (d?.api_key) setShownKey({ label: p.name, key: String(d.api_key) });
+              }}
+              className="rounded-lg bg-rose-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+            >
+              Rotate key
+            </button>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }

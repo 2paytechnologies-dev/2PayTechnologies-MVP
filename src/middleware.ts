@@ -51,6 +51,7 @@ const needsSession = (path: string) =>
   path === "/api/ads/campaigns" ||
   path === "/api/watchdog" ||
   path.startsWith("/api/admin") ||
+  path.startsWith("/api/kyc") ||
   path === "/api/portal";
 
 export async function middleware(req: NextRequest) {
@@ -59,6 +60,10 @@ export async function middleware(req: NextRequest) {
   if (path.startsWith("/api/") && UNSAFE.has(req.method) && !SERVER_TO_SERVER.some((p) => path.startsWith(p)) && crossSite(req)) {
     return NextResponse.json({ error: "Cross-site requests are not allowed" }, { status: 403 });
   }
+
+  // A ride-hailing checkout link (/terminal?session_token=...) opens the driver's phone with no 2Pay sign-in: the long random token
+  // in the link is the credential, and every call that page makes is authorised by that token (see /api/v1/integrations/ride-hailing).
+  if (path === "/terminal" && req.nextUrl.searchParams.has("session_token")) return NextResponse.next();
 
   if (process.env.AUTH_ENFORCED !== "true" || !needsSession(path)) return NextResponse.next();
 

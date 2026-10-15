@@ -80,7 +80,7 @@ export async function GET(req: Request) {
       const { data: members } = await admin.from("merchant_staff").select("id, name, team_no, role").eq("merchant_id", merchantId).in("id", ids);
       for (const m of members ?? []) staff[m.id] = { id: m.id, name: m.name, team_no: m.team_no, role: m.role };
     }
-    const safe = page.map(({ rail_checkout_url, rail_session_id, rail_nonce, ...rest }) => ({ ...rest, confirmation: toConfirmation(rest as Parameters<typeof toConfirmation>[0], staff), staff_name: rest.staff_id ? (staff[rest.staff_id as string]?.name ?? null) : null, team_no: rest.staff_id ? (staff[rest.staff_id as string]?.team_no ?? null) : null }));
+    const safe = page.map(({ rail_checkout_url, rail_session_id, rail_nonce, payee_accounts, ...rest }) => ({ ...rest, confirmation: toConfirmation(rest as Parameters<typeof toConfirmation>[0], staff), staff_name: rest.staff_id ? (staff[rest.staff_id as string]?.name ?? null) : null, team_no: rest.staff_id ? (staff[rest.staff_id as string]?.team_no ?? null) : null }));
     return NextResponse.json({ rows: safe, hasMore: rows.length > limit }, { headers: { "Cache-Control": "private, no-store", "x-feed-sig": feedSignature(rows) } });
   } catch (e) {
     if (e instanceof AdminConfigError) return NextResponse.json({ error: "Server misconfigured" }, { status: 500 });

@@ -6,7 +6,8 @@ import { CheckCircle2, ChevronRight, Clock, Landmark, Loader2, ShieldCheck, Smar
 import type { PayView } from "@/lib/types";
 import type { SettlementKind } from "@/lib/constants";
 import { RailBadge } from "@/components/RailBadge";
-import { InstitutionBadge } from "@/components/InstitutionBadge";
+import { BrandLogo } from "@/components/BrandLogo";
+import { hueFor } from "@/lib/constants";
 import { LanguageMenu } from "@/components/LanguageMenu";
 import { fmt } from "@/lib/format";
 import { preloadAnnouncement, primeAudio } from "@/lib/chime";
@@ -118,11 +119,11 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
    * Tapping a rail starts the payment. Simulated mode authorizes at once; live mode sends the payer to the rail to
    * approve, and the sale only turns paid when the rail confirms. The server derives the institution from the pay node.
    */
-  const pay = async (choice: { method: SettlementKind } | { app: string }) => {
+  const pay = async (choice: { method: SettlementKind } | { app: string } | { account: string }) => {
     if (state.kind !== "ready" || busy) return;
     if (!tipValid) return setError(t("crew.pay.tipBad"));
     primeAudio(); // this tap is the browser's permission for sound, so the receipt can chime the moment it appears
-    const key = "method" in choice ? choice.method : choice.app;
+    const key = "method" in choice ? choice.method : "account" in choice ? choice.account : choice.app;
     setBusy(key);
     setError(null);
     setBanner(null);
@@ -130,7 +131,7 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
       try {
         if (phone) localStorage.setItem(PHONE_KEY, phone);
         if ("method" in choice) localStorage.setItem(METHOD_KEY, choice.method);
-        else localStorage.setItem(APP_KEY, choice.app);
+        else if ("app" in choice) localStorage.setItem(APP_KEY, choice.app);
       } catch {
         /* storage unavailable: it just won't be remembered */
       }
@@ -138,7 +139,7 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // Either the customer's own app (the server picks the merchant's receiving account) or one of the merchant's methods.
-        body: JSON.stringify({ ...("method" in choice ? { method: choice.method } : { payer_app: choice.app }), phone, lang, ...(tipAmount > 0 && !state.resumed ? { tip: tipAmount } : {}) }),
+        body: JSON.stringify({ ...("method" in choice ? { method: choice.method } : "account" in choice ? { account_id: choice.account } : { payer_app: choice.app }), phone, lang, ...(tipAmount > 0 && !state.resumed ? { tip: tipAmount } : {}) }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? t("common.errorGeneric"));
@@ -306,9 +307,10 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
                           onClick={() => pay({ app: a.name })}
                           disabled={busy !== null}
                           aria-label={t("pay.via", { name: a.name })}
-                          className={`relative flex flex-col items-center gap-1.5 rounded-xl border px-1 py-3 text-center transition active:scale-95 disabled:opacity-60 ${lastApp === a.name ? "border-brand bg-brand/10" : "border-slate-700 bg-slate-950/50"}`}
+                          style={lastApp === a.name ? undefined : { borderColor: `hsl(${hueFor(a.name)} 45% 42% / 0.55)`, background: `hsl(${hueFor(a.name)} 45% 30% / 0.14)` }}
+                          className={`relative flex flex-col items-center gap-1.5 rounded-xl border px-1 py-3 text-center shadow-sm transition active:scale-95 disabled:opacity-60 ${lastApp === a.name ? "border-brand bg-brand/10" : ""}`}
                         >
-                          {busy === a.name ? <Loader2 className="h-10 w-10 animate-spin" /> : <InstitutionBadge name={a.name} className="h-10 w-10 text-xs" />}
+                          {busy === a.name ? <Loader2 className="h-10 w-10 animate-spin" /> : <BrandLogo name={a.name} className="h-10 w-10 text-xs" />}
                           <span className="line-clamp-2 min-h-[2rem] text-[11px] font-medium leading-4 text-slate-200">{a.name.replace(/ \([A-Z]+\)$/, "")}</span>
                           {lastApp === a.name && <span className="absolute -top-1.5 right-1 rounded bg-brand px-1.5 text-[9px] font-bold uppercase text-slate-950">{t("hub.last")}</span>}
                         </button>
@@ -325,6 +327,28 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
                   {t("hub.other")}
                 </button>
               </div>
+              {state.kind === "ready" && state.tx.payee_options && state.tx.payee_options.length > 0 && (
+                <div className="space-y-2 border-t border-slate-800 pt-3">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">{t("hub.driverAccounts")}</h3>
+                  {state.tx.payee_options.map((o) => (
+                    <button
+                      key={o.id}
+                      type="button"
+                      onClick={() => pay({ account: o.id })}
+                      disabled={busy !== null}
+                      style={{ borderColor: `hsl(${hueFor(o.institution)} 50% 45% / 0.6)`, background: `hsl(${hueFor(o.institution)} 50% 32% / 0.16)` }}
+                      className="flex w-full items-center gap-3 rounded-xl border p-3 text-left shadow-sm transition active:scale-[0.99] disabled:opacity-60"
+                    >
+                      {busy === o.id ? <Loader2 className="h-10 w-10 animate-spin" /> : <BrandLogo name={o.institution} className="h-10 w-10 text-xs" />}
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-bold text-white">{o.institution}</span>
+                        <span className="block font-mono text-xs text-slate-300">{o.account_masked}</span>
+                      </span>
+                      <ChevronRight className="h-5 w-5 shrink-0 opacity-60" />
+                    </button>
+                  ))}
+                </div>
+              )}
               {opening && <p className="rounded-lg bg-brand/10 p-2 text-center text-xs font-medium text-emerald-200">{t(`hub.open.${opening.transfer}` as Key, { app: opening.app, to: opening.to })}</p>}
               {busy && busy !== "bank" && busy !== "wallet" && !opening && <p className="text-center text-xs text-slate-400">{t("hub.opening", { name: busy })}</p>}
             </section>
@@ -338,10 +362,11 @@ export default function PayPage({ params }: { params: Promise<{ token: string }>
                   key={method}
                   onClick={() => pay({ method })}
                   disabled={busy !== null}
-                  className={`flex w-full items-center gap-4 rounded-2xl border p-4 text-left transition active:scale-[0.99] disabled:opacity-60 ${tone}`}
+                  style={{ borderColor: `hsl(${hueFor(name)} 50% 45% / 0.6)`, background: `hsl(${hueFor(name)} 50% 32% / 0.16)` }}
+                  className={`flex w-full items-center gap-4 rounded-2xl border p-4 text-left shadow-md transition active:scale-[0.99] disabled:opacity-60`}
                 >
                   <span className="relative flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-slate-950/60">
-                    {busy === method ? <Loader2 className="h-6 w-6 animate-spin" /> : <InstitutionBadge name={name} className="h-10 w-10 text-xs" />}
+                    {busy === method ? <Loader2 className="h-6 w-6 animate-spin" /> : <BrandLogo name={name} className="h-10 w-10 text-xs" />}
                     <Icon className="absolute -bottom-1 -right-1 h-4 w-4 rounded-full bg-slate-900 p-0.5 text-slate-300" />
                   </span>
                   <span className="min-w-0 flex-1">

@@ -4,11 +4,25 @@ import { useEffect, useState } from "react";
 import { Logo } from "@/components/Logo";
 import { LanguageMenu } from "@/components/LanguageMenu";
 import { TerminalPanel } from "@/components/TerminalPanel";
+import { RideTerminal } from "@/components/RideTerminal";
+import { SESSION_TOKEN_RE } from "@/lib/ride-token";
 import { cachedPortal, fetchPortal, type Role, type SessionInfo } from "@/lib/client-session";
 import { useT } from "@/lib/i18n";
 import type { Merchant } from "@/lib/types";
 
+/** `/terminal?session_token=...` is a ride-hailing checkout (the driver's phone, no sign-in); anything else is the merchant's own terminal. */
 export default function TerminalPage() {
+  const [ride, setRide] = useState<string | null | undefined>(undefined);
+  useEffect(() => {
+    const tok = new URLSearchParams(window.location.search).get("session_token");
+    setRide(tok && SESSION_TOKEN_RE.test(tok) ? tok : null);
+  }, []);
+  if (ride === undefined) return null;
+  if (ride) return <RideTerminal sessionToken={ride} />;
+  return <MerchantTerminal />;
+}
+
+function MerchantTerminal() {
   const t = useT();
   const [merchants, setMerchants] = useState<Merchant[]>([]);
   const [merchantId, setMerchantId] = useState("");

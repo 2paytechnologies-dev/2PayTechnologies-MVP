@@ -56,6 +56,10 @@ jobs:
           FAYDA_ISSUER: http://localhost:4040
           FAYDA_CLIENT_ID: 2pay-e2e
           FAYDA_ALLOW_INSECURE: "true"
+          # V2.5: the pretend Fayda e-KYC gateway (FAN + code) the tests start on port 4050; the Fayda gate is off here so the other tests can sell
+          FAYDA_EKYC_URL: http://localhost:4050
+          FAYDA_EKYC_KEY: e2e-ekyc-key
+          KYC_REQUIRE_FAYDA: "false"
       - run: node --experimental-transform-types --no-warnings tests/e2e/e2e.mjs
 
   android:

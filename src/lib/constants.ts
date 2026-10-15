@@ -84,3 +84,6 @@ export function hueFor(name: string): number {
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
   return h % 360;
 }
+
+/** The tap-to-confirmation speed 2Pay aims for, in seconds (shown on the admin dashboard). */
+export const LATENCY_TARGET_S = 2.0;

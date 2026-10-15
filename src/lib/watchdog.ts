@@ -1,6 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { timingSafeEqual } from "node:crypto";
-import { LATENCY_TARGET_S, type FeeInputs } from "@/lib/fee";
 import type { WatchdogEventType, WatchdogSeverity } from "@/lib/types";
 
 /** Server-only helpers for the 2Pay Watchdog. Import from route handlers only. */
@@ -76,40 +75,6 @@ export async function checkAml(
     message: `Transaction of ${tx.amount} ${tx.currency} exceeds the SAR threshold (${AML_SAR_THRESHOLD_ETB}). Marked for FIS filing.`,
     details: { fis_status: "PENDING_FILING", threshold: AML_SAR_THRESHOLD_ETB, amount: tx.amount },
   });
-}
-
-/**
- * Per-node fee inputs (R_t, T_t, C_t) for the orchestration fee, from the last hour of
- * watchdog events and the node's recent settled taps. Any failure degrades to a neutral node.
- */
-export async function nodeFeeContext(admin: SupabaseClient, merchantId: string): Promise<Omit<FeeInputs, "volume">> {
-  const neutral = { risk: 0, traffic: 0, credit: 0 };
-  try {
-    const hourAgo = new Date(Date.now() - 3_600_000).toISOString();
-    const dayAgo = new Date(Date.now() - 86_400_000).toISOString();
-    const [ev, tx] = await Promise.all([
-      admin.from("watchdog_events").select("risk_score").eq("merchant_id", merchantId).gte("created_at", hourAgo).limit(200),
-      admin
-        .from("transactions")
-        .select("latency_ms")
-        .eq("merchant_id", merchantId)
-        .in("status", ["SUCCESS", "SETTLED"])
-        .gte("created_at", dayAgo)
-        .order("created_at", { ascending: false })
-        .limit(500),
-    ]);
-    if (ev.error || tx.error) return neutral;
-    const scores = (ev.data ?? []).map((r) => Number(r.risk_score));
-    const lats = (tx.data ?? []).map((r) => r.latency_ms).filter((l): l is number => l != null);
-    const meanLatency = lats.length ? lats.reduce((a, b) => a + b, 0) / lats.length / 1000 : 0;
-    return {
-      risk: scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0,
-      traffic: Math.max(0, meanLatency - LATENCY_TARGET_S),
-      credit: (tx.data ?? []).length,
-    };
-  } catch {
-    return neutral;
-  }
 }
 
 /** Constant-time string comparison for shared secrets. */

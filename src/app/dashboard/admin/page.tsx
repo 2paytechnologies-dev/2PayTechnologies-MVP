@@ -3,7 +3,7 @@
 import { useMemo } from "react";
 import { Banknote, Gauge, Network, ShieldCheck } from "lucide-react";
 import { Logo } from "@/components/Logo";
-import { LATENCY_TARGET_S } from "@/lib/fee";
+import { LATENCY_TARGET_S } from "@/lib/constants";
 import { fmt } from "@/lib/format";
 import { isPaid } from "@/lib/types";
 import { useOverview } from "@/lib/use-overview";
@@ -56,7 +56,7 @@ export default function AdminHubPage() {
       </section>
 
       <WatchdogFeed events={events} merchants={merchantMap} error={eventError} />
-      <FeeInspector txs={txs} events={events} merchants={merchants} />
+      <FeeInspector />
       <AdminOps />
     </main>
   );

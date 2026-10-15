@@ -46,6 +46,7 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="twopay" android:host="activate" />
+                <data android:scheme="twopay" android:host="checkout" />
             </intent-filter>
 
             <!-- Merchant links open in the app. Payer links (/pay/...) are deliberately NOT claimed. -->

@@ -101,7 +101,8 @@ class MainActivity : ComponentActivity() {
     /**
      * Deep links open in-app. https links on our host load as they are. A team activation link
      * `twopay://activate/<token>` becomes the activation page on our own host; the token must be exactly the shape we issue
-     * (43 URL-safe characters), so nothing else can be smuggled in. Anything else falls back to the start page.
+     * (43 URL-safe characters), so nothing else can be smuggled in. A ride-hailing checkout link `twopay://checkout?token=<token>` opens the
+     * terminal with the fare filled in (same token shape). Anything else falls back to the start page.
      */
     private fun openFromIntent(intent: Intent?) {
         val data = intent?.data
@@ -110,6 +111,10 @@ class MainActivity : ComponentActivity() {
         } else if (data != null && data.scheme == "twopay" && data.host == "activate") {
             val token = data.pathSegments?.firstOrNull().orEmpty()
             if (TOKEN.matches(token)) web.loadUrl("https://$siteHost/join/$token") else loadStart()
+        } else if (data != null && data.scheme == "twopay" && data.host == "checkout") {
+            // A ride-hailing app hands the driver a checkout link: the terminal opens with the fare already filled in.
+            val token = data.getQueryParameter("token").orEmpty()
+            if (TOKEN.matches(token)) web.loadUrl("https://$siteHost/terminal?session_token=$token") else loadStart()
         } else {
             loadStart()
         }

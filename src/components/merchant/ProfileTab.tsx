@@ -21,7 +21,7 @@ interface Profile {
   kyc_note: string | null;
   sms_receipts: boolean;
   fayda_verified_at: string | null;
-  fayda: { configured: boolean; required: boolean; name: string | null };
+  fayda: { configured: boolean; ekyc: "sandbox" | "gateway" | null; required: boolean; verified: boolean; name: string | null };
 }
 
 const STATUS_STYLE: Record<KycStatus, { cls: string; Icon: typeof BadgeCheck }> = {
@@ -37,6 +37,10 @@ export function ProfileTab({ merchant, signedIn, onSignOut }: { merchant: Mercha
   const [p, setP] = useState<Profile | null>(null);
   const [faydaBusy, setFaydaBusy] = useState(false);
   const [faydaNote, setFaydaNote] = useState<{ ok: boolean; text: string } | null>(null);
+  // The FAN + one-time-code route: type the 16-digit Fayda number, then the code sent to the phone linked to it.
+  const [fan, setFan] = useState("");
+  const [otp, setOtp] = useState("");
+  const [faydaSession, setFaydaSession] = useState<{ id: string; phone: string | null } | null>(null);
   const [form, setForm] = useState({ legal_name: "", tin: "", business_license: "", address: "", location: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -100,6 +104,44 @@ export function ProfileTab({ merchant, signedIn, onSignOut }: { merchant: Mercha
     }
   };
 
+  const post = async (path: string, body: Record<string, unknown>) => {
+    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...body, merchant_id: merchant.id }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.code === "FAYDA_NOT_CONFIGURED" ? t("fayda.notConfigured") : (d.error ?? t("common.errorGeneric")));
+    return d;
+  };
+  const sendFanCode = async () => {
+    setFaydaBusy(true);
+    setFaydaNote(null);
+    try {
+      const d = await post("/api/kyc/fayda/initiate", { fan });
+      setFaydaSession({ id: d.fayda_session_id, phone: d.phone_hint ?? null });
+      setOtp("");
+    } catch (e) {
+      setFaydaNote({ ok: false, text: (e as Error).message });
+    } finally {
+      setFaydaBusy(false);
+    }
+  };
+  const checkFanCode = async () => {
+    if (!faydaSession) return;
+    setFaydaBusy(true);
+    setFaydaNote(null);
+    try {
+      const d = await post("/api/kyc/fayda/verify-otp", { fayda_session_id: faydaSession.id, otp });
+      setFaydaSession(null);
+      setFan("");
+      setOtp("");
+      setFaydaNote({ ok: true, text: t("fayda.ok") });
+      setP((cur) => (cur ? { ...cur, fayda_verified_at: new Date().toISOString(), fayda: { ...cur.fayda, verified: true, name: d.name ?? cur.fayda.name } } : cur));
+    } catch (e) {
+      setFaydaNote({ ok: false, text: (e as Error).message });
+    } finally {
+      setFaydaBusy(false);
+    }
+  };
+  const faydaDone = !!(p?.fayda.verified || p?.fayda_verified_at);
+
   const status = p?.kyc_status ?? "UNVERIFIED";
   const S = STATUS_STYLE[status];
   const app = typeof window !== "undefined" ? nativeInfo() : null;
@@ -160,18 +202,46 @@ export function ProfileTab({ merchant, signedIn, onSignOut }: { merchant: Mercha
           <h3 className="flex items-center gap-2 font-semibold">
             <Fingerprint className="h-4 w-4 text-brand" /> {t("fayda.title")}
           </h3>
-          {p?.fayda_verified_at && (
+          {faydaDone && (
             <span className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-200">
               <BadgeCheck className="h-3.5 w-3.5" /> {p.fayda.name ? t("fayda.verified", { name: p.fayda.name }) : t("fayda.verifiedPlain")}
             </span>
           )}
         </div>
         <p className="text-sm text-slate-400">{t("fayda.body")}</p>
-        {p?.fayda.required && !p.fayda_verified_at && <p className="text-xs text-amber-300">{t("fayda.required")}</p>}
-        {p && !p.fayda.configured && <p className="rounded-lg bg-slate-800 p-3 text-xs text-slate-300">{t("fayda.notConfigured")}</p>}
+        {p?.fayda.required && !faydaDone && <p className="text-xs text-amber-300">{t("fayda.required")}</p>}
+        {p && !p.fayda.configured && !p.fayda.ekyc && <p className="rounded-lg bg-slate-800 p-3 text-xs text-slate-300">{t("fayda.notConfigured")}</p>}
         {faydaNote && <p className={cn("rounded-lg p-3 text-sm", faydaNote.ok ? "bg-emerald-500/15 text-emerald-300" : "bg-rose-500/15 text-rose-300")}>{faydaNote.text}</p>}
-        {!p?.fayda_verified_at && (
-          <button onClick={startFayda} disabled={faydaBusy || !p?.fayda.configured} className="inline-flex h-12 items-center gap-2 rounded-xl bg-brand px-5 font-bold text-slate-950 disabled:opacity-50">
+        {p?.fayda.ekyc && !faydaDone && (
+          <div className="space-y-3 rounded-xl border border-slate-700 bg-slate-950 p-3">
+            {p.fayda.ekyc === "sandbox" && <p className="rounded-lg bg-amber-500/10 p-2 text-xs text-amber-200">{t("fayda.fan.sandbox")}</p>}
+            {!faydaSession ? (
+              <>
+                <Field label={t("fayda.fan.label")}>
+                  <input className={input} value={fan} onChange={(e) => setFan(e.target.value.replace(/[^0-9 -]/g, ""))} inputMode="numeric" autoComplete="off" maxLength={19} placeholder="0000 0000 0000 0000" />
+                </Field>
+                <button onClick={sendFanCode} disabled={faydaBusy || fan.replace(/\D/g, "").length !== 16} className="inline-flex h-12 items-center gap-2 rounded-xl bg-brand px-5 font-bold text-slate-950 disabled:opacity-50">
+                  {faydaBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Fingerprint className="h-4 w-4" />} {t("fayda.fan.send")}
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-slate-300">{faydaSession.phone ? t("fayda.fan.sentTo", { phone: faydaSession.phone }) : t("fayda.fan.sent")}</p>
+                <Field label={t("fayda.fan.otpLabel")}>
+                  <input className={input} value={otp} onChange={(e) => setOtp(e.target.value.replace(/\D/g, ""))} inputMode="numeric" autoComplete="one-time-code" maxLength={8} />
+                </Field>
+                <div className="flex flex-wrap items-center gap-3">
+                  <button onClick={checkFanCode} disabled={faydaBusy || otp.length < 4} className="inline-flex h-12 items-center gap-2 rounded-xl bg-brand px-5 font-bold text-slate-950 disabled:opacity-50">
+                    {faydaBusy && <Loader2 className="h-4 w-4 animate-spin" />} {t("fayda.fan.verify")}
+                  </button>
+                  <button onClick={() => { setFaydaSession(null); setOtp(""); setFaydaNote(null); }} className="text-sm text-slate-400 underline">{t("fayda.fan.change")}</button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+        {!faydaDone && p?.fayda.configured && (
+          <button onClick={startFayda} disabled={faydaBusy || !p?.fayda.configured} className={cn("inline-flex h-12 items-center gap-2 rounded-xl px-5 font-bold disabled:opacity-50", p?.fayda.ekyc ? "border border-slate-600 text-slate-200" : "bg-brand text-slate-950")}>
             {faydaBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Fingerprint className="h-4 w-4" />} {t("fayda.cta")}
           </button>
         )}

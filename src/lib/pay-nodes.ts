@@ -1,9 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { feeBreakdown } from "@/lib/fee";
+import { priceTransaction } from "@/lib/pricing/engine";
 import { toMasked, type SavedAccount } from "@/lib/settlement";
-import { nodeFeeContext } from "@/lib/watchdog";
 import { railMode } from "@/lib/rails";
-import { openAccount } from "@/lib/fieldcrypt";
+import { openAccount, openAccounts, type StoredAccount } from "@/lib/fieldcrypt";
+import { faydaRequired } from "@/lib/fayda-ekyc";
+import { BANKS } from "@/lib/constants";
 
 /** Postgres 42703 (undefined column) / PostgREST PGRST204 (column missing from schema cache): a migration has not been applied. */
 const isSchemaDrift = (e: { code?: string; message?: string }) => e.code === "42703" || e.code === "PGRST204" || /schema cache/i.test(e.message ?? "");
@@ -15,24 +16,39 @@ export type NodeResult =
 /** Pay nodes live for 90 seconds; the terminal's QR rotates well inside that. */
 export const NODE_TTL_MS = 90_000;
 
+/** A ride-hailing sale pays the DRIVER's accounts (given by the partner for this one ride), not the partner business's own. */
+export interface Payee {
+  rideSessionId: string;
+  /** Stored (encrypted) accounts, as kept on the ride session. */
+  accounts: StoredAccount[];
+}
+
 /**
- * Create a single-use PENDING pay node for a merchant. The one place that does this, so the cashier terminal and the
- * static shop QR obey the same rules: routing snapshot (masked), node-priced fee, verification gate in live mode.
- * A sale keyed by a waiter or cashier carries their id, so every payment can be traced to the person who took it.
+ * Create a single-use PENDING pay node for a merchant. The one place that does this, so the cashier terminal, the
+ * static shop QR and the ride-hailing terminal obey the same rules: routing snapshot (masked), the tiered fee with VAT,
+ * verification gate in live mode. A sale keyed by a waiter or cashier carries their id, so every payment can be traced
+ * to the person who took it.
  */
 export async function createPayNode(
   admin: SupabaseClient,
   merchantId: string,
   amount: number,
-  source: "TERMINAL" | "STATIC_QR",
+  source: "TERMINAL" | "STATIC_QR" | "RIDE",
   /** The team member keying the sale (from their session, never from a request). null = the owner or the counter. */
   staffId: string | null = null,
+  /** Ride-hailing only: where this ride's money goes. */
+  payee: Payee | null = null,
 ): Promise<NodeResult> {
   const rounded = Math.round(amount * 100) / 100;
+  // The fee schedule (base + 15% VAT on the base) is fixed by the amount. A payment too small to cover its own fee is refused.
+  const price = priceTransaction(rounded);
+  if (price.net_merchant_settlement <= 0) {
+    return { ok: false, status: 400, body: { error: "That amount is too small to process.", code: "AMOUNT_TOO_SMALL" } };
+  }
 
   const { data: merchant, error: mErr } = await admin
     .from("merchants")
-    .select("id, active_bank, active_wallet, kyc_status, static_qr_enabled, fayda_verified_at")
+    .select("id, active_bank, active_wallet, kyc_status, static_qr_enabled, fayda_verified_at, fayda_verified")
     .eq("id", merchantId)
     .maybeSingle();
   if (mErr) {
@@ -53,24 +69,30 @@ export async function createPayNode(
     return { ok: false, status: 403, body: { error: "Business verification is required before taking live payments.", code: "KYC_REQUIRED" } };
   }
 
-  // Account numbers are stored encrypted; open them here (server side) only to make the masked snapshot.
-  // With KYC_REQUIRE_FAYDA=true the owner's national ID (Fayda) must also be verified before live payments are taken.
-  if (railMode() === "live" && process.env.KYC_REQUIRE_FAYDA === "true" && !merchant.fayda_verified_at) {
+  // With real money the owner's national ID (Fayda) must also be verified (unless KYC_REQUIRE_FAYDA=false).
+  if (faydaRequired() && !merchant.fayda_verified && !merchant.fayda_verified_at) {
     return { ok: false, status: 403, body: { error: "The owner must verify their national ID (Fayda) before taking live payments.", code: "FAYDA_REQUIRED" } };
   }
 
-  const bank: SavedAccount | null = openAccount(merchant.active_bank);
-  const wallet: SavedAccount | null = openAccount(merchant.active_wallet);
-  if ((merchant.active_bank && !bank) || (merchant.active_wallet && !wallet)) {
-    return { ok: false, status: 503, body: { error: "The payment account cannot be read right now. Contact 2Pay support.", code: "ACCOUNT_UNREADABLE" } };
+  // Account numbers are stored encrypted; open them here (server side) only to make the masked snapshot.
+  let bank: SavedAccount | null;
+  let wallet: SavedAccount | null;
+  if (payee) {
+    // A ride: the driver's first bank and first wallet are the defaults shown; the payer's own app picks among all of them later.
+    const pool = openAccounts(payee.accounts);
+    if (pool.length !== payee.accounts.length) return { ok: false, status: 503, body: { error: "The payment account cannot be read right now. Contact 2Pay support.", code: "ACCOUNT_UNREADABLE" } };
+    bank = pool.find((a) => (BANKS as readonly string[]).includes(a.institution)) ?? null;
+    wallet = pool.find((a) => !(BANKS as readonly string[]).includes(a.institution)) ?? null;
+  } else {
+    bank = openAccount(merchant.active_bank);
+    wallet = openAccount(merchant.active_wallet);
+    if ((merchant.active_bank && !bank) || (merchant.active_wallet && !wallet)) {
+      return { ok: false, status: 503, body: { error: "The payment account cannot be read right now. Contact 2Pay support.", code: "ACCOUNT_UNREADABLE" } };
+    }
   }
   if (!bank && !wallet) {
     return { ok: false, status: 409, body: { error: "No settlement account configured. Add and activate a bank or wallet first.", code: "NO_ACTIVE_ROUTING" } };
   }
-
-  // F_t needs the node's risk/traffic/loyalty; a lookup failure prices the node neutrally.
-  const ctx = await nodeFeeContext(admin, merchantId);
-  const { fee } = feeBreakdown({ volume: rounded, ...ctx });
 
   const { data, error } = await admin
     .from("transactions")
@@ -78,12 +100,18 @@ export async function createPayNode(
       merchant_id: merchantId,
       amount: rounded,
       expected_amount: rounded,
-      fee_ft: fee,
+      // The ledger records exactly what 2Pay charges: the fee before VAT, the VAT on it, and what the merchant is paid.
+      // fee_ft keeps the total (base + VAT) so existing totals and reports keep working.
+      fee_ft: price.total_fee,
+      base_fee: price.base_fee,
+      vat_fee: price.vat_fee,
+      net_merchant_settlement: price.net_merchant_settlement,
       expires_at: new Date(Date.now() + NODE_TTL_MS).toISOString(),
       routed_bank: bank ? toMasked(bank) : null,
       routed_wallet: wallet ? toMasked(wallet) : null,
       source,
       ...(staffId ? { staff_id: staffId } : {}),
+      ...(payee ? { payee_accounts: payee.accounts, ride_session_id: payee.rideSessionId } : {}),
     })
     .select()
     .single();
@@ -95,5 +123,8 @@ export async function createPayNode(
     }
     return { ok: false, status: 500, body: { error: "Could not create pay node" } };
   }
-  return { ok: true, tx: data };
+  // The driver's stored accounts stay on the server: they are never part of what a terminal or browser receives.
+  const { payee_accounts: _hidden, ...safe } = data as Record<string, unknown>;
+  void _hidden;
+  return { ok: true, tx: safe };
 }

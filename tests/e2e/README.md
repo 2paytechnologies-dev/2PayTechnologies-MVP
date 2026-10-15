@@ -16,6 +16,8 @@ $env:SMS_WEBHOOK_URL="http://localhost:4030"; $env:CRON_SECRET="cron-secret-for-
 $env:DATA_ENCRYPTION_KEY="sUZyu4eR6emKWbHKI5O1YGPURWjcZtmsU0VHVXVHik0="
 $env:FAYDA_ISSUER="http://localhost:4040"; $env:FAYDA_CLIENT_ID="2pay-e2e"; $env:FAYDA_ALLOW_INSECURE="true"
 $env:FAYDA_PRIVATE_JWK=(Get-Content tests/e2e/fayda-client.jwk.json -Raw)
+# V2.5: the pretend Fayda e-KYC gateway (FAN + code) the tests start on port 4050, and the Fayda gate off so the other tests can sell
+$env:FAYDA_EKYC_URL="http://localhost:4050"; $env:FAYDA_EKYC_KEY="e2e-ekyc-key"; $env:KYC_REQUIRE_FAYDA="false"
 npx next dev -p 3170
 
 # 3. the tests (Node 24+)

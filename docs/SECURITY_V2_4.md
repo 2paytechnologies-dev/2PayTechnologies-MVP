@@ -68,7 +68,7 @@ It is tested end to end against a **pretend provider** (`tests/e2e/fake-fayda.mj
 
 **What is kept.** Only the minimum: when it was verified, a **keyed hash** of the person's unique ID (so the same person cannot be attached to many businesses unnoticed) and their name, encrypted. No photo, no address, no ID number.
 
-**Gate.** With `KYC_REQUIRE_FAYDA=true`, live payments are refused until the owner has verified. It is off until Fayda is connected.
+**Gate.** From V2.5, with real money (`RAIL_MODE=live`) live payments are refused until the owner has verified, unless `KYC_REQUIRE_FAYDA=false` is set deliberately. A second, FAN + one-time-code route was added in V2.5 (see `docs/RIDE_AND_PRICING_V2_5.md`).
 
 **What 2Pay cannot do alone.** Fayda access is granted by the **National ID Program** to an onboarded organisation: you receive the issuer URL, a client id, and you register the public half of your key.
 The endpoints, claim names and scopes here follow the common standard but were **not tested against the real service**; expect small adjustments (`FAYDA_SCOPES`, `FAYDA_ACR_VALUES`, claim names) during onboarding.

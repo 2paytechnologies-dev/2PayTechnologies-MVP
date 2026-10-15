@@ -3,7 +3,7 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 
-const TABLES = ["transactions", "merchants", "watchdog_events", "rail_events", "ad_impressions", "ad_campaigns", "merchant_staff", "refund_requests", "audit_log", "app_errors", "rail_attempts", "payer_contacts", "otp_challenges", "settlement_change_log"];
+const TABLES = ["transactions", "merchants", "watchdog_events", "rail_events", "ad_impressions", "ad_campaigns", "merchant_staff", "refund_requests", "audit_log", "app_errors", "rail_attempts", "payer_contacts", "otp_challenges", "settlement_change_log", "ride_partners", "ride_sessions", "fayda_sessions"];
 const db = Object.fromEntries(TABLES.map((t) => [t, []]));
 const counters = new Map(); // rate_limit_hit
 
@@ -37,9 +37,10 @@ function matches(row, params) {
   return true;
 }
 const embed = (table, row, sel) => {
-  if (!/merchants\(/.test(sel ?? "")) return row;
-  if (table === "transactions" || table === "refund_requests" || table === "merchant_staff") return { ...row, merchants: db.merchants.find((m) => m.id === row.merchant_id) ?? null };
-  return row;
+  let out = row;
+  if (/merchants\(/.test(sel ?? "") && ["transactions", "refund_requests", "merchant_staff", "ride_partners"].includes(table)) out = { ...out, merchants: db.merchants.find((m) => m.id === row.merchant_id) ?? null };
+  if (/ride_partners\(/.test(sel ?? "") && table === "ride_sessions") out = { ...out, ride_partners: db.ride_partners.find((p) => p.id === row.partner_id) ?? null };
+  return out;
 };
 const send = (res, code, body, headers = {}) => { res.writeHead(code, { "Content-Type": "application/json", ...headers }); res.end(body === undefined ? "" : JSON.stringify(body)); };
 const readBody = (req) => new Promise((r) => { let s = ""; req.on("data", (c) => (s += c)); req.on("end", () => r(s ? JSON.parse(s) : {})); });
@@ -52,6 +53,9 @@ function violates(table, item, existing) {
   if (table === "merchant_staff" && item.team_no && existing.some((r) => r.merchant_id === item.merchant_id && r.team_no === item.team_no)) return "merchant_staff_team_no_uq";
   if (table === "merchant_staff" && item.invite_token_hash && existing.some((r) => r.invite_token_hash === item.invite_token_hash)) return "merchant_staff_invite_uq";
   if (table === "merchants" && item.phone && existing.some((r) => r.phone === item.phone)) return "merchants_phone_uq";
+  if (table === "ride_partners" && existing.some((r) => r.key_hash === item.key_hash)) return "ride_partners_key_hash_key";
+  if (table === "ride_sessions" && existing.some((r) => r.partner_id === item.partner_id && r.partner_ride_id === item.partner_ride_id)) return "ride_sessions_partner_id_partner_ride_id_key";
+  if (table === "ride_sessions" && existing.some((r) => r.token_hash === item.token_hash)) return "ride_sessions_token_hash_key";
   if (table === "transactions" && item.rail_nonce && existing.some((r) => r.rail_nonce === item.rail_nonce)) return "transactions_rail_nonce_uq";
   return null;
 }
@@ -122,7 +126,7 @@ http.createServer(async (req, res) => {
         const hit = db[table].find((r) => r[upsertKey] === b[upsertKey]);
         if (hit) { Object.assign(hit, b); out.push(hit); continue; }
       }
-      const item = { id: randomUUID(), created_at: new Date().toISOString(), ...(table === "transactions" ? { token: randomUUID(), currency: "ETB", status: "PENDING", rail: "EthioPay-IPS", viewed_at: null, latency_ms: null, source: "TERMINAL" } : {}), ...(table === "refund_requests" ? { status: "REQUESTED" } : {}), ...(table === "merchant_staff" ? { active: true, role: "CASHIER" } : {}), ...(table === "payer_contacts" ? { receipt_sent: false } : {}), ...b };
+      const item = { id: randomUUID(), created_at: new Date().toISOString(), ...(table === "transactions" ? { token: randomUUID(), currency: "ETB", status: "PENDING", rail: "EthioPay-IPS", viewed_at: null, latency_ms: null, source: "TERMINAL" } : {}), ...(table === "refund_requests" ? { status: "REQUESTED" } : {}), ...(table === "merchant_staff" ? { active: true, role: "CASHIER" } : {}), ...(table === "payer_contacts" ? { receipt_sent: false } : {}), ...(table === "ride_partners" ? { active: true, last_used_at: null } : {}), ...(table === "ride_sessions" ? { status: "OPEN", opened_at: null, paid_at: null, currency: "ETB" } : {}), ...(table === "fayda_sessions" ? { attempts: 0, consumed_at: null } : {}), ...(table === "merchants" ? { fayda_verified: false } : {}), ...b };
       const bad = violates(table, item, db[table]);
       if (bad) return dup(res, bad);
       db[table].push(item);

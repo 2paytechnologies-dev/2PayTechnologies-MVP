@@ -6,10 +6,11 @@ import { maskTin, validateProfile } from "@/lib/kyc";
 import { audit } from "@/lib/audit";
 import { sealField, tryOpenField } from "@/lib/fieldcrypt";
 import { faydaConfigured } from "@/lib/fayda";
+import { ekycMode, faydaRequired } from "@/lib/fayda-ekyc";
 
 export const dynamic = "force-dynamic";
 
-const COLUMNS = "legal_name, tin, business_license, address, location, kyc_status, kyc_note, kyc_submitted_at, kyc_reviewed_at, static_qr_enabled, sms_receipts, fayda_verified_at, fayda_name";
+const COLUMNS = "legal_name, tin, business_license, address, location, kyc_status, kyc_note, kyc_submitted_at, kyc_reviewed_at, static_qr_enabled, sms_receipts, fayda_verified_at, fayda_verified, fayda_name";
 const bad = (error: string, status = 400) => NextResponse.json({ error }, { status });
 
 /** The TIN is shown masked; the full number never leaves the server again after it is submitted. */
@@ -20,7 +21,8 @@ function view(row: Record<string, unknown>) {
     tin_masked: maskTin(tryOpenField(tin as string | null, "tin")),
     has_tin: !!tin,
     // The owner's own national-ID check: whether the provider is set up, whether it is required, and who it verified.
-    fayda: { configured: faydaConfigured(), required: process.env.KYC_REQUIRE_FAYDA === "true", name: tryOpenField(fayda_name as string | null, "national-id") },
+    // `ekyc` is the FAN + one-time-code route ("sandbox" in development), `configured` the browser sign-in route (OIDC).
+    fayda: { configured: faydaConfigured(), ekyc: ekycMode(), required: faydaRequired(), verified: !!(rest.fayda_verified || rest.fayda_verified_at), name: tryOpenField(fayda_name as string | null, "national-id") },
   };
 }
 
