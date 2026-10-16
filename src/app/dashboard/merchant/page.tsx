@@ -4,13 +4,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { BarChart3, CalendarClock, FlaskConical, LogIn, LogOut, Megaphone, Nfc, Store, UserCog, Users, Wallet } from "lucide-react";
+import { BarChart3, CalendarClock, Calculator, CarFront, FlaskConical, LogOut, Megaphone, Nfc, Store, UserCog, Users, Wallet } from "lucide-react";
 import { Logo } from "@/components/Logo";
 import { LanguageMenu } from "@/components/LanguageMenu";
 import { UpdateBanner } from "@/components/UpdateBanner";
 import { TerminalPanel } from "@/components/TerminalPanel";
 import { cachedPortal, fetchPortal, forgetPortal, type Portal, type SessionInfo } from "@/lib/client-session";
 import { setNodeMode } from "@/lib/native";
+import { useRideCatcher } from "@/lib/use-ride-catcher";
+import { fmt } from "@/lib/format";
 import { useT, type Key } from "@/lib/i18n";
 import type { Merchant } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -27,6 +29,8 @@ const loaders = {
   ads: () => import("@/components/merchant/CampaignsTab").then((m) => m.CampaignsTab),
   team: () => import("@/components/merchant/TeamTab").then((m) => m.TeamTab),
   profile: () => import("@/components/merchant/ProfileTab").then((m) => m.ProfileTab),
+  tax: () => import("@/components/merchant/TaxTab").then((m) => m.TaxTab),
+  rides: () => import("@/components/merchant/DriverRidesTab").then((m) => m.DriverRidesTab),
 };
 const TabSkeleton = () => (
   <div className="space-y-3" aria-busy="true">
@@ -41,12 +45,16 @@ const BriefingTab = dynamic(loaders.today, { loading: TabSkeleton });
 const CampaignsTab = dynamic(loaders.ads, { loading: TabSkeleton });
 const TeamTab = dynamic(loaders.team, { loading: TabSkeleton });
 const ProfileTab = dynamic(loaders.profile, { loading: TabSkeleton });
+const TaxTab = dynamic(loaders.tax, { loading: TabSkeleton });
+const DriverRidesTab = dynamic(loaders.rides, { loading: TabSkeleton });
 
 const ALL_TABS = [
+  { id: "rides", key: "portal.tab.rides", icon: CarFront },
   { id: "terminal", key: "portal.tab.terminal", icon: Nfc },
   { id: "accounts", key: "portal.tab.accounts", icon: Wallet },
   { id: "sales", key: "portal.tab.sales", icon: CalendarClock },
   { id: "today", key: "portal.tab.today", icon: BarChart3 },
+  { id: "tax", key: "portal.tab.tax", icon: Calculator },
   { id: "ads", key: "portal.tab.ads", icon: Megaphone },
   { id: "team", key: "portal.tab.team", icon: Users },
   { id: "profile", key: "portal.tab.profile", icon: UserCog },
@@ -126,8 +134,40 @@ export default function MerchantPortalPage() {
     if (session) setNodeMode((role === "WAITER" || role === "CASHIER") && !!session.merchant);
   }, [session, role]);
 
-  const tabs = useMemo(() => (role === "OWNER" ? ALL_TABS : role === "MANAGER" ? ALL_TABS.filter((x) => x.id === "terminal" || x.id === "accounts") : ALL_TABS.filter((x) => x.id === "terminal")), [role]);
   const merchant = merchants.find((m) => m.id === merchantId);
+  // An individual driver gets the Rides tab (catching finished trips, linking companies) and no Ads or Team; a business gets no Rides tab.
+  const isDriver = merchant?.kind === "DRIVER";
+  const tabs = useMemo(
+    () => (role === "OWNER" ? ALL_TABS.filter((x) => (x.id === "rides" ? isDriver : isDriver ? x.id !== "ads" && x.id !== "team" : true)) : role === "MANAGER" ? ALL_TABS.filter((x) => x.id === "terminal" || x.id === "accounts") : ALL_TABS.filter((x) => x.id === "terminal")),
+    [role, isDriver],
+  );
+
+  // The driver's app catches a finished trip by itself while it is open, and opens the fare (unless a sale is in progress: then the banner waits).
+  const catcher = useRideCatcher(isDriver && role === "OWNER" && fresh);
+  // Each ride opens by itself ONCE (remembered for this browser session), so a driver who steps back to the portal is not pulled into the fare again;
+  // the banner above stays for as long as the ride is waiting.
+  useEffect(() => {
+    const r = catcher.ride;
+    if (!r || saleActive) return;
+    const key = `2pay:ride-opened:${r.id}`;
+    try {
+      if (sessionStorage.getItem(key)) return;
+      sessionStorage.setItem(key, "1");
+    } catch {
+      /* storage blocked: open it this once */
+    }
+    router.push(`/terminal?ride=${r.id}`);
+  }, [catcher.ride, saleActive, router]);
+  // A driver lands on Rides, unless a link asked for a particular tab.
+  const landed = useRef(false);
+  useEffect(() => {
+    if (!isDriver || landed.current) return;
+    landed.current = true;
+    if (!new URLSearchParams(window.location.search).get("tab")) {
+      setTab("rides");
+      setVisited((v) => new Set(v).add("rides"));
+    }
+  }, [isDriver]);
   const needsSetup = !!merchant?.routing && !merchant.routing.bank && !merchant.routing.wallet && (role === "OWNER" || role === "MANAGER");
 
   const go = (id: TabId) => {
@@ -194,6 +234,19 @@ export default function MerchantPortalPage() {
 
       <UpdateBanner />
 
+      {catcher.ride && (
+        <button onClick={() => router.push(`/terminal?ride=${catcher.ride!.id}`)} className="mb-4 flex w-full items-center gap-3 rounded-2xl border border-brand/50 bg-brand/15 p-4 text-left">
+          <CarFront className="h-7 w-7 shrink-0 text-brand" />
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm text-slate-300">{t("driver.banner.title", { company: catcher.ride.company })}</span>
+            <span className="block text-2xl font-bold tabular-nums">
+              {fmt(catcher.ride.amount)} {catcher.ride.currency === "ETB" ? t("common.etb") : catcher.ride.currency}
+            </span>
+          </span>
+          <span className="rounded-xl bg-brand px-4 py-2 font-bold text-slate-950">{t("driver.banner.cta")}</span>
+        </button>
+      )}
+
       {session?.railMode === "simulated" && (
         <div className="mb-4 flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
           <FlaskConical className="h-4 w-4 shrink-0" /> {t("portal.demoBanner")}
@@ -253,8 +306,10 @@ export default function MerchantPortalPage() {
           {canAccounts && body("accounts", <PaymentAccountsTab merchant={merchant} welcome={welcome} onChanged={() => void loadPortal()} onOpenTerminal={() => go("terminal")} />)}
           {canOwn && body("sales", <LookbackTab merchant={merchant} />)}
           {canOwn && body("today", <BriefingTab merchant={merchant} />)}
-          {canOwn && body("ads", <CampaignsTab merchant={merchant} />)}
-          {canOwn && body("team", <TeamTab merchant={merchant} />)}
+          {canOwn && body("tax", <TaxTab merchant={merchant} onOpenProfile={() => go("profile")} />)}
+          {canOwn && isDriver && body("rides", <DriverRidesTab ride={catcher.ride} listening={catcher.listening} onOpenRide={(id) => router.push(`/terminal?ride=${id}`)} />)}
+          {canOwn && !isDriver && body("ads", <CampaignsTab merchant={merchant} />)}
+          {canOwn && !isDriver && body("team", <TeamTab merchant={merchant} />)}
           {canOwn && body("profile", <ProfileTab merchant={merchant} onSignOut={signOut} signedIn={!!session?.merchant} />)}
         </>
       )}

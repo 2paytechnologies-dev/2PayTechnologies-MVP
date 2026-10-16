@@ -1,3 +1,4 @@
+import type { Category } from "@/lib/categories";
 /**
  * Live rails:      PENDING -> PROCESSING (payer sent to the rail) -> SETTLED (rail confirmed) | FAILED.
  * Simulated mode:  PENDING -> SUCCESS (instant authorization) -> SETTLED.
@@ -21,7 +22,9 @@ export const AD_IMPRESSION_COST = 0.05;
 export interface Merchant {
   id: string;
   business_name: string;
-  category: "Fuel" | "Retail";
+  category: Category;
+  /** DRIVER for an individual ride-service driver; absent or MERCHANT for a business. */
+  kind?: "MERCHANT" | "DRIVER";
   terminal_id: string;
   location: string | null;
   /** Institution names of the active routing; undefined when the server could not read it. */

@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { AdminConfigError, getAdminClient } from "@/lib/supabase-admin";
 import { SESSION_TOKEN_RE, sha256 } from "@/lib/ride";
-import { PAID_STATES, bad, safeTx, sessionByToken, statusOf } from "@/lib/ride-server";
+import { PAID_STATES, bad, safeTx, sessionByToken, sessionForDriver, statusOf } from "@/lib/ride-server";
+import { requireDriver } from "@/lib/driver-server";
+import { isUuid } from "@/lib/settlement";
 import { clientIp } from "@/lib/audit";
 import { rateLimit } from "@/lib/ratelimit";
 
@@ -13,7 +15,8 @@ const CHECK_EVERY_MS = 150;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * The driver's phone asks "has this ride been paid?" with its checkout link: GET ?session_token=...&wait=7&sig=...
+ * The driver's phone asks "has this ride been paid?" with its checkout link (GET ?session_token=...&wait=7&sig=...) or, when the driver is
+ * signed in to 2Pay and the app caught the ride itself, with the ride id (GET ?ride_id=...&wait=7&sig=...).
  * The request is HELD until the answer changes, so a payment reaches the driver's screen about one network hop after it clears
  * (the same held-request technique as the cashier terminal). Without `wait` it answers at once. `x-status-sig` is the signature to
  * send back as `sig` next time.
@@ -21,7 +24,8 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export async function GET(req: Request) {
   const q = new URL(req.url).searchParams;
   const token = q.get("session_token") ?? "";
-  if (!SESSION_TOKEN_RE.test(token)) return bad("This checkout link is not valid.", 400, { code: "SESSION_INVALID" });
+  const rideId = q.get("ride_id") ?? "";
+  if (rideId ? !isUuid(rideId) : !SESSION_TOKEN_RE.test(token)) return bad("This checkout link is not valid.", 400, { code: "SESSION_INVALID" });
   const wait = Math.min(MAX_WAIT_S, Math.max(0, Number(q.get("wait")) || 0));
   const known = q.get("sig") ?? "";
 
@@ -33,7 +37,14 @@ export async function GET(req: Request) {
     throw e;
   }
   if (!(await rateLimit(admin, `ride:status:${clientIp(req)}`, 240, 60))) return bad("Too many requests.", 429);
-  const s = await sessionByToken(admin, token);
+  let s;
+  if (rideId) {
+    const who = await requireDriver();
+    if (!who.ok) return who.res;
+    s = await sessionForDriver(admin, rideId, who.merchantId);
+  } else {
+    s = await sessionByToken(admin, token);
+  }
   if (!s) return bad("This checkout link is not valid.", 404, { code: "SESSION_INVALID" });
 
   const read = async () => {

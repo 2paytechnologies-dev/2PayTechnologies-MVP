@@ -32,7 +32,7 @@ export async function GET() {
 
   try {
     const admin = getAdminClient();
-    let list = admin.from("merchants").select("id, business_name, category, terminal_id, location, active_bank, active_wallet").neq("kind", "RIDE_PARTNER").order("business_name");
+    let list = admin.from("merchants").select("id, business_name, category, kind, terminal_id, location, active_bank, active_wallet").neq("kind", "RIDE_PARTNER").order("business_name");
     if (authEnforced() && !isAdminPhone(session?.ph)) list = list.eq("id", session!.mid);
 
     const sid = staffIdOf(session);
@@ -49,6 +49,7 @@ export async function GET() {
       id: m.id,
       business_name: m.business_name,
       category: m.category,
+      kind: m.kind === "DRIVER" ? "DRIVER" : "MERCHANT",
       terminal_id: m.terminal_id,
       location: m.location ?? null,
       routing: { bank: m.active_bank?.institution ?? null, wallet: m.active_wallet?.institution ?? null },

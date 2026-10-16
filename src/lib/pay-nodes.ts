@@ -65,14 +65,17 @@ export async function createPayNode(
     return { ok: false, status: 403, body: { error: "This shop is not accepting scan-to-pay payments right now", code: "STATIC_QR_DISABLED" } };
   }
 
+  // An individual driver (kind DRIVER) is not a business: no TIN or licence is asked of them, and the national ID (Fayda) check is not
+  // required of them. They are known by their verified phone and by the ride-hailing companies that link them.
+  const individual = merchant.kind === "DRIVER";
   // With real money, only verified businesses may take payments (when the operator turns the gate on).
-  if (railMode() === "live" && process.env.KYC_REQUIRED_FOR_LIVE === "true" && merchant.kyc_status !== "VERIFIED") {
+  if (railMode() === "live" && process.env.KYC_REQUIRED_FOR_LIVE === "true" && !individual && merchant.kyc_status !== "VERIFIED") {
     return { ok: false, status: 403, body: { error: "Business verification is required before taking live payments.", code: "KYC_REQUIRED" } };
   }
 
   // With real money the owner's national ID (Fayda) must also be verified (unless KYC_REQUIRE_FAYDA=false). A ride-hailing company
   // has no merchant owner who signs in: an admin registers it after checking its documents, and its drivers are paid directly.
-  if (faydaRequired() && merchant.kind !== "RIDE_PARTNER" && !merchant.fayda_verified && !merchant.fayda_verified_at) {
+  if (faydaRequired() && merchant.kind !== "RIDE_PARTNER" && !individual && !merchant.fayda_verified && !merchant.fayda_verified_at) {
     return { ok: false, status: 403, body: { error: "The owner must verify their national ID (Fayda) before taking live payments.", code: "FAYDA_REQUIRED" } };
   }
 

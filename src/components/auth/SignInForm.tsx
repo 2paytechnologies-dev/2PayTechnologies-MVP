@@ -10,10 +10,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useT, type Key } from "@/lib/i18n";
 import { getDeviceId } from "@/lib/device";
+import { REGISTRATION_CATEGORIES, type RegistrationCategory } from "@/lib/categories";
 import { cn } from "@/lib/utils";
 
 type Mode = "login" | "register";
-type Category = "Fuel" | "Retail";
 
 interface Props {
   testMode: boolean;
@@ -34,7 +34,8 @@ export function SignInForm({ testMode, next, initialMode }: Props) {
   const [mode, setMode] = useState<Mode>(initialMode);
   const [phone, setPhone] = useState("");
   const [businessName, setBusinessName] = useState("");
-  const [category, setCategory] = useState<Category>("Retail");
+  // The category is a required choice: nothing is pre-selected, so nobody registers under the wrong one by default.
+  const [category, setCategory] = useState<RegistrationCategory | null>(null);
   const [accepted, setAccepted] = useState(false);
   const [code, setCode] = useState("");
   const [challenge, setChallenge] = useState<{ id: string; phone: string; devCode?: string } | null>(null);
@@ -60,6 +61,7 @@ export function SignInForm({ testMode, next, initialMode }: Props) {
     setError(null);
     if (mode === "register") {
       if (businessName.trim().length < 2) return setError(t("auth.needName"));
+      if (!category) return setError(t("auth.needCategory"));
       if (!accepted) return setError(t("auth.mustAccept"));
     }
     setBusy(true);
@@ -136,21 +138,26 @@ export function SignInForm({ testMode, next, initialMode }: Props) {
                   <span className="text-xs font-medium text-slate-300">{t("auth.businessName")}</span>
                   <Input value={businessName} onChange={(e) => setBusinessName(e.target.value)} maxLength={80} placeholder={t("auth.businessNamePh")} autoComplete="organization" />
                 </label>
-                <div className="space-y-1">
-                  <span className="text-xs font-medium text-slate-300">{t("auth.businessType")}</span>
-                  <div className="grid grid-cols-2 gap-2">
-                    {(["Retail", "Fuel"] as const).map((c) => (
+                <fieldset className="space-y-1.5">
+                  <legend className="text-xs font-medium text-slate-300">
+                    {t("auth.businessType")} <span className="text-rose-400">*</span>
+                  </legend>
+                  <div className="grid grid-cols-1 gap-2" role="radiogroup" aria-required="true">
+                    {REGISTRATION_CATEGORIES.map((c) => (
                       <button
                         key={c}
                         type="button"
+                        role="radio"
+                        aria-checked={category === c}
                         onClick={() => setCategory(c)}
-                        className={cn("rounded-lg border py-2 text-sm font-medium", category === c ? "border-brand bg-brand/10 text-white" : "border-slate-700 text-slate-400")}
+                        className={cn("rounded-lg border px-3 py-2 text-left", category === c ? "border-brand bg-brand/10 text-white" : "border-slate-700 text-slate-300")}
                       >
-                        {t(`auth.type.${c}` as Key)}
+                        <span className="block text-sm font-semibold">{t(`auth.type.${c}` as Key)}</span>
+                        <span className="block text-xs text-slate-500">{t(`auth.typeHint.${c}` as Key)}</span>
                       </button>
                     ))}
                   </div>
-                </div>
+                </fieldset>
               </>
             )}
             <label className="block space-y-1">
@@ -174,7 +181,7 @@ export function SignInForm({ testMode, next, initialMode }: Props) {
               </label>
             )}
             {mode === "login" && <p className="text-xs text-slate-500">{t("auth.cashierHint")}</p>}
-            <Button type="submit" className="w-full" disabled={busy || !phone.trim()}>
+            <Button type="submit" className="w-full" disabled={busy || !phone.trim() || (mode === "register" && !category)}>
               {busy && <Loader2 className="h-4 w-4 animate-spin" />} {t("auth.sendCode")}
             </Button>
           </form>

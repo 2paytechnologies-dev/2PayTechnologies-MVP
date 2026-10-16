@@ -1,4 +1,5 @@
 import { buildEmvQr, type EmvAccountTemplate } from "@/lib/emvqr";
+import { MCC_BY_CATEGORY } from "@/lib/categories";
 
 /**
  * Dynamic ETHQR assembly for one payment: an EMVCo merchant-presented QR carrying the merchant account the customer
@@ -34,7 +35,7 @@ export function parseTemplate(raw: string | undefined): EthQrTemplate | null {
   }
 }
 
-const MCC: Record<string, string> = { Fuel: "5541", Retail: "5411" };
+const MCC = MCC_BY_CATEGORY;
 
 export interface EthQrInput {
   merchantName: string;

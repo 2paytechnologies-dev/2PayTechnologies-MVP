@@ -1,19 +1,21 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { BadgeCheck, Car, ClipboardList, Fingerprint, Landmark, Loader2, RotateCcw, Siren } from "lucide-react";
+import { BadgeCheck, Calculator, Car, ClipboardList, Fingerprint, Landmark, Loader2, RotateCcw, Siren } from "lucide-react";
 import { FaydaTracker } from "@/components/admin/FaydaTracker";
 import { ComplianceAudit } from "@/components/admin/ComplianceAudit";
+import { TaxRulesPanel } from "@/components/admin/TaxRulesPanel";
 import { fmt, formatEAT } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-type Tab = "refunds" | "kyc" | "fayda" | "nbe" | "partners" | "audit" | "errors";
+type Tab = "refunds" | "kyc" | "fayda" | "nbe" | "partners" | "tax" | "audit" | "errors";
 const TABS: { id: Tab; label: string; icon: typeof RotateCcw }[] = [
   { id: "refunds", label: "Refund requests", icon: RotateCcw },
   { id: "kyc", label: "Verification", icon: BadgeCheck },
   { id: "fayda", label: "Fayda KYC", icon: Fingerprint },
   { id: "nbe", label: "NBE compliance", icon: Landmark },
   { id: "partners", label: "Ride partners", icon: Car },
+  { id: "tax", label: "Tax rules", icon: Calculator },
   { id: "audit", label: "Audit log", icon: ClipboardList },
   { id: "errors", label: "App errors", icon: Siren },
 ];
@@ -36,6 +38,7 @@ export function AdminOps() {
         {tab === "fayda" && <FaydaTracker />}
         {tab === "nbe" && <ComplianceAudit />}
         {tab === "partners" && <RidePartners />}
+        {tab === "tax" && <TaxRulesPanel />}
         {tab === "audit" && <Table url="/api/admin/audit?limit=100" empty="No audit entries yet." cols={["Time (EAT)", "Actor", "Role", "Action", "Target", "IP", "Details"]} row={(r) => [formatEAT(r.created_at), r.actor_phone ?? "—", r.role ?? "—", r.action, `${r.target_type ?? ""} ${String(r.target_id ?? "").slice(0, 8)}`, r.ip ?? "", JSON.stringify(r.details ?? {})]} />}
         {tab === "errors" && <Table url="/api/admin/errors" empty="No errors reported." cols={["Time (EAT)", "Source", "Message", "Page", "Device"]} row={(r) => [formatEAT(r.created_at), r.source, r.message, r.url ?? "", String(r.user_agent ?? "").slice(0, 60)]} />}
       </div>
@@ -259,8 +262,10 @@ function RidePartners() {
             <div className="text-xs text-slate-400">
               {p.contact_name ? `${p.contact_name} · ` : ""}{p.contact_phone ? `${p.contact_phone} · ` : ""}key …{p.key_hint} · {p.last_used_at ? `last used ${formatEAT(p.last_used_at)}` : "never used"}
             </div>
+            <div className="text-xs text-slate-500">Driver accounts: {p.allow_partner_accounts ? "the company may also send them with a ride (legacy mode)" : "kept by each driver in 2Pay (the company cannot send them)"}</div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            <button disabled={busy} onClick={() => call("PATCH", { id: p.id, allow_partner_accounts: !p.allow_partner_accounts })} className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">{p.allow_partner_accounts ? "Stop legacy accounts" : "Allow legacy accounts"}</button>
             <button disabled={busy} onClick={() => call("PATCH", { id: p.id, active: !p.active })} className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50">{p.active ? "Disable" : "Enable"}</button>
             <button
               disabled={busy}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { CheckCircle2, Loader2, Nfc, TriangleAlert } from "lucide-react";
 import { Logo } from "@/components/Logo";
@@ -37,7 +37,7 @@ interface Paid {
  * `?session_token=`). The fare and the driver's accounts come from the ride, so there is no keypad: it mints the pay node, offers it
  * to the passenger's phone by tap (in the 2Pay app) or QR, keeps a fresh node ready, and shows the result the moment it clears.
  */
-export function RideTerminal({ sessionToken }: { sessionToken: string }) {
+export function RideTerminal({ sessionToken, rideId }: { sessionToken?: string; rideId?: string }) {
   const t = useT();
   const { lang } = useI18n();
   const [node, setNode] = useState<Node | null>(null);
@@ -46,6 +46,8 @@ export function RideTerminal({ sessionToken }: { sessionToken: string }) {
   const [processing, setProcessing] = useState(false);
   const [native, setNative] = useState<NativeInfo | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  // Opened from a link, the link proves it; opened by the signed-in driver's own app (it caught the ride), the ride id does.
+  const ident = useMemo(() => (rideId ? ({ ride_id: rideId } as Record<string, string>) : ({ session_token: sessionToken ?? "" } as Record<string, string>)), [rideId, sessionToken]);
   const paidRef = useRef(false);
   const langRef = useRef(lang);
   useEffect(() => {
@@ -54,7 +56,7 @@ export function RideTerminal({ sessionToken }: { sessionToken: string }) {
 
   const mint = useCallback(async (): Promise<boolean> => {
     try {
-      const res = await fetch(`${API}/mint`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_token: sessionToken }) });
+      const res = await fetch(`${API}/mint`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(ident) });
       const d = await res.json().catch(() => ({}));
       if (!res.ok) {
         // A link that is invalid, expired, cancelled or already paid will not get better by asking again.
@@ -70,7 +72,7 @@ export function RideTerminal({ sessionToken }: { sessionToken: string }) {
       setError({ code: null, text: t("common.offline") });
       return false;
     }
-  }, [sessionToken, t]);
+  }, [ident, t]);
 
   useEffect(() => {
     preloadAnnouncement();
@@ -115,7 +117,7 @@ export function RideTerminal({ sessionToken }: { sessionToken: string }) {
   useEffect(() => {
     if (paid) return;
     return startLongPoll(async (sig, signal) => {
-      const res = await fetch(`${API}/status?${new URLSearchParams({ session_token: sessionToken, wait: "7", sig })}`, { cache: "no-store", signal });
+      const res = await fetch(`${API}/status?${new URLSearchParams({ ...ident, wait: "7", sig })}`, { cache: "no-store", signal });
       if (!res.ok) throw new Error(String(res.status));
       const d = await res.json();
       setProcessing(!!d.processing);
@@ -128,7 +130,7 @@ export function RideTerminal({ sessionToken }: { sessionToken: string }) {
       }
       return res.headers.get("x-status-sig") ?? "";
     });
-  }, [sessionToken, paid, t]);
+  }, [ident, paid, t]);
 
   useEffect(() => {
     if (!node || paid) return;
@@ -156,7 +158,12 @@ export function RideTerminal({ sessionToken }: { sessionToken: string }) {
           {fmt(Number(paid.amount) + Number(paid.tip_amount ?? 0))} {paid.currency === "ETB" ? etb : paid.currency}
         </p>
         <p className="mt-6 text-2xl font-semibold">{t("terminal.done.paidVia", { rail: paid.rail })}</p>
-        <p className="mt-8 text-emerald-100">{t("ride.close")}</p>
+        <p className="mt-8 text-emerald-100">{rideId ? t("ride.next") : t("ride.close")}</p>
+        {rideId && (
+          <a href="/dashboard/merchant?tab=rides" className="mt-6 rounded-xl bg-white px-6 py-3 text-lg font-bold text-emerald-700">
+            {t("ride.backToRides")}
+          </a>
+        )}
       </div>
     );
   }
@@ -168,6 +175,11 @@ export function RideTerminal({ sessionToken }: { sessionToken: string }) {
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col gap-4 p-4" onPointerDownCapture={primeAudio}>
       {header}
+      {rideId && (
+        <a href="/dashboard/merchant?tab=rides" className="self-start text-sm text-slate-400 hover:text-slate-200">
+          ← {t("ride.backToRides")}
+        </a>
+      )}
       {error && (
         <div className="flex items-start gap-2 rounded-lg bg-rose-500/15 p-3 text-sm text-rose-300">
           <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0" /> <span>{error.text}</span>

@@ -3,8 +3,9 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 
-const TABLES = ["transactions", "merchants", "watchdog_events", "rail_events", "ad_impressions", "ad_campaigns", "merchant_staff", "refund_requests", "audit_log", "app_errors", "rail_attempts", "payer_contacts", "otp_challenges", "settlement_change_log", "ride_partners", "ride_sessions", "fayda_sessions", "ai_event_outbox", "ai_scores"];
+const TABLES = ["transactions", "merchants", "watchdog_events", "rail_events", "ad_impressions", "ad_campaigns", "merchant_staff", "refund_requests", "audit_log", "app_errors", "rail_attempts", "payer_contacts", "otp_challenges", "settlement_change_log", "ride_partners", "ride_sessions", "ride_driver_links", "ride_link_codes", "tax_settings", "fayda_sessions", "ai_event_outbox", "ai_scores"];
 const db = Object.fromEntries(TABLES.map((t) => [t, []]));
+db.tax_settings.push({ id: 1, rules: {}, version: 1, confirmed_by: null, confirmed_at: null, updated_at: new Date().toISOString() }); // seeded by supabase/v2_7.sql
 const counters = new Map(); // rate_limit_hit
 
 export const A = "1f5f43ec-bbef-40da-87fe-797cd61d1e86";
@@ -59,6 +60,8 @@ function violates(table, item, existing) {
   if (table === "ride_partners" && existing.some((r) => r.key_hash === item.key_hash)) return "ride_partners_key_hash_key";
   if (table === "ride_sessions" && existing.some((r) => r.partner_id === item.partner_id && r.partner_ride_id === item.partner_ride_id)) return "ride_sessions_partner_id_partner_ride_id_key";
   if (table === "ride_sessions" && existing.some((r) => r.token_hash === item.token_hash)) return "ride_sessions_token_hash_key";
+  if (table === "ride_driver_links" && existing.some((r) => r.partner_id === item.partner_id && r.driver_ref === item.driver_ref)) return "ride_driver_links_partner_id_driver_ref_key";
+  if (table === "ride_link_codes" && existing.some((r) => r.code_hash === item.code_hash)) return "ride_link_codes_code_hash_key";
   if (table === "transactions" && item.rail_nonce && existing.some((r) => r.rail_nonce === item.rail_nonce)) return "transactions_rail_nonce_uq";
   return null;
 }
@@ -142,11 +145,18 @@ http.createServer(async (req, res) => {
       rows = rows.sort((a, c) => (at(a.created_at) === at(c.created_at) ? (a.id < c.id ? 1 : -1) : at(c.created_at) - at(a.created_at))).slice(0, Math.max(1, Math.min(b.p_limit ?? 25, 1000)));
       return send(res, 200, rows.map((x) => { const ev = confirmedEv(x.id); return { id: x.id, merchant_id: x.merchant_id, created_at: x.created_at, processing_at: x.processing_at ?? null, settled_at: x.settled_at ?? null, amount: x.amount, settled_amount: x.settled_amount ?? null, rail: x.rail, rail_provider: x.rail_provider ?? null, settlement_method: x.settlement_method ?? null, routed_bank: x.routed_bank ?? null, routed_wallet: x.routed_wallet ?? null, source: x.source, status: x.status, base_fee: x.base_fee ?? null, vat_fee: x.vat_fee ?? null, net_merchant_settlement: x.net_merchant_settlement ?? null, payer_app: x.payer_app ?? null, business: merchantOf(x.merchant_id).business_name, terminal: merchantOf(x.merchant_id).terminal_id, confirmed: ev.length > 0, confirmed_at: ev.map((e) => e.received_at).filter(Boolean).sort().at(-1) ?? null }; }));
     }
+    if (rpc[1] === "merchant_tax_volume") {
+      const month = (iso) => new Date(new Date(iso).getTime() + 3 * 3600_000).toISOString().slice(0, 7);
+      const paid = db.transactions.filter((x) => x.merchant_id === b.p_merchant && PAID.includes(x.status) && at(x.created_at) >= at(b.p_from) && at(x.created_at) < at(b.p_to));
+      const refs = db.refund_requests.filter((r) => r.merchant_id === b.p_merchant && r.status === "REFUNDED").map((r) => ({ r, t: db.transactions.find((x) => x.id === r.transaction_id) })).filter((x) => x.t && at(x.t.created_at) >= at(b.p_from) && at(x.t.created_at) < at(b.p_to));
+      const months = [...new Set([...paid.map((x) => month(x.created_at)), ...refs.map((x) => month(x.t.created_at))])].sort();
+      return send(res, 200, months.map((mo) => ({ month: mo, sales: paid.filter((x) => month(x.created_at) === mo).length, gross: sum(paid.filter((x) => month(x.created_at) === mo), (x) => x.amount), tips: sum(paid.filter((x) => month(x.created_at) === mo), (x) => x.tip_amount), refunded: sum(refs.filter((x) => month(x.t.created_at) === mo), (x) => x.r.amount) })));
+    }
     if (rpc[1] === "admin_network_counts") {
       const ms = db.merchants.filter((m) => m.kind === "MERCHANT");
       const bound = db.merchant_staff.filter((s) => s.device_id_hash && s.active !== false);
       const day = db.ride_sessions.filter((s) => at(s.created_at) >= Date.now() - 86_400_000);
-      return send(res, 200, { merchants: ms.length, shop_qr_stands: ms.filter((m) => m.static_qr_enabled !== false).length, app_devices: bound.length, by_role: bound.reduce((o, s) => ({ ...o, [s.role]: (o[s.role] ?? 0) + 1 }), {}), ride_partners: db.ride_partners.filter((p) => p.active !== false).length, ride_drivers_24h: new Set(day.map((s) => `${s.partner_id}:${s.driver_id}`)).size, ride_checkouts_24h: day.length });
+      return send(res, 200, { merchants: ms.length, shop_qr_stands: ms.filter((m) => m.static_qr_enabled !== false).length, app_devices: bound.length, by_role: bound.reduce((o, s) => ({ ...o, [s.role]: (o[s.role] ?? 0) + 1 }), {}), ride_partners: db.ride_partners.filter((p) => p.active !== false).length, drivers: db.merchants.filter((m) => m.kind === "DRIVER").length, linked_drivers: new Set(db.ride_driver_links.filter((l) => l.status === "ACTIVE").map((l) => l.merchant_id)).size, ride_drivers_24h: new Set(day.map((s) => s.driver_merchant_id ?? `${s.partner_id}:${s.driver_id}`)).size, ride_checkouts_24h: day.length });
     }
     if (rpc[1] === "authorize_transaction_v2") {
       const t = db.transactions.find((x) => x.token === b.p_token && x.status === "PENDING" && new Date(x.expires_at) > new Date());
@@ -180,11 +190,15 @@ http.createServer(async (req, res) => {
     const upsertKey = u.searchParams.get("on_conflict");
     const out = [];
     for (const b of Array.isArray(body) ? body : [body]) {
+      if (!upsertKey && prefer.includes("merge-duplicates") && b.id != null) {
+        const hit = db[table].find((r) => r.id === b.id); // upsert on the primary key
+        if (hit) { Object.assign(hit, b); out.push(hit); continue; }
+      }
       if (upsertKey && prefer.includes("merge-duplicates")) {
         const hit = db[table].find((r) => r[upsertKey] === b[upsertKey]);
         if (hit) { Object.assign(hit, b); out.push(hit); continue; }
       }
-      const item = { id: randomUUID(), created_at: new Date().toISOString(), ...(table === "transactions" ? { token: randomUUID(), currency: "ETB", status: "PENDING", rail: "EthioPay-IPS", viewed_at: null, latency_ms: null, source: "TERMINAL" } : {}), ...(table === "refund_requests" ? { status: "REQUESTED" } : {}), ...(table === "merchant_staff" ? { active: true, role: "CASHIER" } : {}), ...(table === "payer_contacts" ? { receipt_sent: false } : {}), ...(table === "ride_partners" ? { active: true, last_used_at: null } : {}), ...(table === "ride_sessions" ? { status: "OPEN", opened_at: null, paid_at: null, currency: "ETB" } : {}), ...(table === "fayda_sessions" ? { attempts: 0, consumed_at: null } : {}), ...(table === "merchants" ? { kind: "MERCHANT", fayda_verified: false } : {}), ...(table === "ai_event_outbox" ? { attempts: 0, sent_at: null, next_attempt_at: new Date().toISOString(), last_error: null } : {}), ...b };
+      const item = { id: randomUUID(), created_at: new Date().toISOString(), ...(table === "transactions" ? { token: randomUUID(), currency: "ETB", status: "PENDING", rail: "EthioPay-IPS", viewed_at: null, latency_ms: null, source: "TERMINAL" } : {}), ...(table === "refund_requests" ? { status: "REQUESTED" } : {}), ...(table === "merchant_staff" ? { active: true, role: "CASHIER" } : {}), ...(table === "payer_contacts" ? { receipt_sent: false } : {}), ...(table === "ride_partners" ? { active: true, last_used_at: null, allow_partner_accounts: false } : {}), ...(table === "ride_sessions" ? { status: "OPEN", opened_at: null, paid_at: null, currency: "ETB", driver_merchant_id: null } : {}), ...(table === "fayda_sessions" ? { attempts: 0, consumed_at: null } : {}), ...(table === "merchants" ? { kind: "MERCHANT", fayda_verified: false } : {}), ...(table === "ai_event_outbox" ? { attempts: 0, sent_at: null, next_attempt_at: new Date().toISOString(), last_error: null } : {}), ...b };
       const bad = violates(table, item, db[table]);
       if (bad) return dup(res, bad);
       db[table].push(item);

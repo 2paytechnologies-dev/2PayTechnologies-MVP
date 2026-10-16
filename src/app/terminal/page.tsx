@@ -12,15 +12,19 @@ import type { Merchant } from "@/lib/types";
 
 /** `/terminal?session_token=...` is a ride-hailing checkout (the driver's phone, no sign-in); anything else is the merchant's own terminal. */
 export default function TerminalPage() {
-  const [ride, setRide] = useState<string | null | undefined>(undefined);
+  const [ride, setRide] = useState<{ token?: string; id?: string } | null | undefined>(undefined);
   useEffect(() => {
-    const tok = new URLSearchParams(window.location.search).get("session_token");
-    setRide(tok && SESSION_TOKEN_RE.test(tok) ? tok : null);
+    const q = new URLSearchParams(window.location.search);
+    const tok = q.get("session_token");
+    const id = q.get("ride"); // a signed-in driver's own app caught this ride (no link token)
+    setRide(tok && SESSION_TOKEN_RE.test(tok) ? { token: tok } : id && UUID_RE.test(id) ? { id } : null);
   }, []);
   if (ride === undefined) return null;
-  if (ride) return <RideTerminal sessionToken={ride} />;
+  if (ride) return <RideTerminal sessionToken={ride.token} rideId={ride.id} />;
   return <MerchantTerminal />;
 }
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function MerchantTerminal() {
   const t = useT();

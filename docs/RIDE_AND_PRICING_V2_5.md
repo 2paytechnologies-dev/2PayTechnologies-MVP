@@ -2,6 +2,8 @@
 
 Run `supabase/v2_5.sql` **before** deploying (part of `all_migrations.sql`). 2Pay is still non-custodial.
 
+> **Changed in V2.7:** a company no longer sends the driver's accounts. Drivers register with 2Pay, hold their own accounts and link to the company; the ride request carries only `partner_ride_id`, `driver_id`, `fare_amount`, `currency`. The `driver_wallet_accounts` field below works only for a company an admin has switched to legacy mode. See `docs/DRIVERS_AND_TAX_V2_7.md`.
+
 ---
 
 ## 1. Ride-hailing in-app checkout (Feres, RIDE, ...)

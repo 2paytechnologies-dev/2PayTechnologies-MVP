@@ -6,10 +6,10 @@ import { findAccountByPhone } from "@/lib/accounts";
 import { audit } from "@/lib/audit";
 import { hashDevice, hashToken, looksLikeDeviceId, looksLikeInviteToken } from "@/lib/team";
 import { APP_REQUIRED_MESSAGE, appRequiredFor } from "@/lib/node-app";
+import { isRegistrationCategory, kindFor, type RegistrationCategory } from "@/lib/categories";
 
 export const dynamic = "force-dynamic";
 
-const CATEGORIES = ["Fuel", "Retail"] as const;
 const bad = (error: string, status = 400) => NextResponse.json({ error }, { status });
 
 /** Check the code, then either create the merchant account (register) or open a session for it (login). */
@@ -33,11 +33,11 @@ export async function POST(req: Request) {
 
     // Validate registration details BEFORE spending the code, so a typo doesn't force a resend.
     let businessName = "";
-    let category: (typeof CATEGORIES)[number] = "Retail";
+    let category: RegistrationCategory = "Merchant";
     if (ch.purpose === "register") {
       businessName = typeof body.business_name === "string" ? body.business_name.trim() : "";
       if (businessName.length < 2 || businessName.length > 80) return bad("Business name must be 2–80 characters");
-      if (!CATEGORIES.includes(body.category)) return bad("Choose Fuel or Retail");
+      if (!isRegistrationCategory(body.category)) return bad("Choose your category: Fuel Station, Supermarket, Service, Ride Service or Merchant");
       category = body.category;
       if (body.accepted_terms !== true) return bad("Please accept the Terms of Service and Privacy Policy to register");
     }
@@ -66,7 +66,7 @@ export async function POST(req: Request) {
         const terminalId = `TRM-${String(Math.floor(Math.random() * 9000) + 1000)}`;
         const { data, error: insErr } = await admin
           .from("merchants")
-          .insert({ business_name: businessName, category, terminal_id: terminalId, phone: ch.phone, phone_verified_at: new Date().toISOString(), terms_accepted_at: new Date().toISOString() })
+          .insert({ business_name: businessName, category, kind: kindFor(category), terminal_id: terminalId, phone: ch.phone, phone_verified_at: new Date().toISOString(), terms_accepted_at: new Date().toISOString() })
           .select("id, business_name, terminal_id")
           .single();
         if (!insErr) merchant = data;
@@ -77,6 +77,14 @@ export async function POST(req: Request) {
         } // else: terminal id collision, retry with a new one
       }
       if (!merchant) return bad("Could not allocate a terminal ID. Please try again.", 500);
+      // A driver a ride-hailing company already invited by this number: the invitation is now waiting for the driver to accept it in the app.
+      if (kindFor(category) === "DRIVER") {
+        try {
+          await admin.from("ride_driver_links").update({ merchant_id: merchant.id, status: "PENDING" }).eq("phone", ch.phone).eq("status", "INVITED");
+        } catch {
+          /* the invitation can still be accepted with a code */
+        }
+      }
     } else {
       const account = await findAccountByPhone(admin, ch.phone); // the owner, or a cashier an owner added
       if (!account) return bad("No account for this number. Register first.", 404);

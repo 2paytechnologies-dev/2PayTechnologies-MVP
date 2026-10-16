@@ -15,6 +15,8 @@ const COLUMNS: { table: string; columns: string; migration: string }[] = [
   { table: "transactions", columns: "base_fee, vat_fee, net_merchant_settlement, payee_accounts, ride_session_id", migration: "v2_5.sql" },
   { table: "merchants", columns: "fayda_fan, fayda_verified, fayda_verification_timestamp, fayda_transaction_id", migration: "v2_5.sql" },
   { table: "merchants", columns: "kind", migration: "v2_6.sql" },
+  { table: "ride_partners", columns: "allow_partner_accounts", migration: "v2_7.sql" },
+  { table: "ride_sessions", columns: "driver_merchant_id", migration: "v2_7.sql" },
   { table: "ride_partners", columns: "contact_name, contact_phone", migration: "v2_6.sql" },
 ];
 const TABLES: { table: string; migration: string }[] = [
@@ -23,6 +25,7 @@ const TABLES: { table: string; migration: string }[] = [
   { table: "settlement_change_log", migration: "v2_3.sql" },
   ...["ride_partners", "ride_sessions", "fayda_sessions"].map((table) => ({ table, migration: "v2_5.sql" })),
   ...["ai_event_outbox", "ai_scores"].map((table) => ({ table, migration: "v2_6.sql" })),
+  ...["ride_driver_links", "ride_link_codes", "tax_settings"].map((table) => ({ table, migration: "v2_7.sql" })),
 ];
 
 export interface SchemaStatus {
@@ -31,7 +34,7 @@ export interface SchemaStatus {
   missing: string[];
 }
 
-const ORDER = ["pilot_reconcile.sql", "multi_rail_routing.sql", "merchant_registration.sql", "rails_live.sql", "v2_1.sql", "v2_2.sql", "v2_3.sql", "v2_4.sql", "v2_5.sql", "v2_6.sql"];
+const ORDER = ["pilot_reconcile.sql", "multi_rail_routing.sql", "merchant_registration.sql", "rails_live.sql", "v2_1.sql", "v2_2.sql", "v2_3.sql", "v2_4.sql", "v2_5.sql", "v2_6.sql", "v2_7.sql"];
 
 /** Asks the database whether every column and table this release uses exists. Names files only, never data. */
 export async function checkSchema(admin: SupabaseClient): Promise<SchemaStatus> {

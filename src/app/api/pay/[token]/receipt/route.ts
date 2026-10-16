@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { adTargetFor } from "@/lib/categories";
 import { AdminConfigError, getAdminClient } from "@/lib/supabase-admin";
 import { referenceFor } from "@/lib/format";
 import { AD_IMPRESSION_COST, type ReceiptView, type ServedAd } from "@/lib/types";
@@ -52,7 +53,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ token: str
           .select(AD_FIELDS)
           .eq("status", "ACTIVE")
           .gte("remaining_budget", AD_IMPRESSION_COST)
-          .in("target_category", ["ALL", merchant.category])
+          .in("target_category", ["ALL", adTargetFor(merchant.category)])
           .limit(50);
         if (data?.length) ad = data[Math.floor(Math.random() * data.length)] as ServedAd;
       }

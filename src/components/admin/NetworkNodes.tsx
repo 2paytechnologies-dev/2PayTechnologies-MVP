@@ -12,6 +12,8 @@ interface Network {
   shop_qr_stands: number;
   app_devices: number;
   app_devices_by_role: { WAITER: number; CASHIER: number; MANAGER: number };
+  drivers?: number;
+  linked_drivers?: number;
   ride_partners: number | null;
   ride_drivers_24h: number;
   ride_checkouts_24h: number;
@@ -86,10 +88,11 @@ export function NetworkNodes({ stats }: { stats: DayStats }) {
         </table>
       </div>
 
-      <div className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3 lg:grid-cols-6">
+      <div className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3 lg:grid-cols-4">
         <Stat label="Businesses" value={net?.merchants} />
         <Stat label="Shop-QR stands enabled" value={net?.shop_qr_stands} />
         <Stat label="Phones bound to the 2Pay app" value={net?.app_devices} sub={net ? `${net.app_devices_by_role.WAITER} waiters · ${net.app_devices_by_role.CASHIER} cashiers · ${net.app_devices_by_role.MANAGER} managers` : undefined} />
+        <Stat label="Individual drivers" value={net?.drivers} sub={net ? `${net.linked_drivers ?? 0} linked to a ride company` : undefined} />
         <Stat label="Ride companies (active)" value={net?.ride_partners ?? undefined} />
         <Stat label="Drivers, last 24 h" value={net?.ride_available ? net.ride_drivers_24h : undefined} />
         <Stat label="Ride checkouts, 24 h" value={net?.ride_available ? net.ride_checkouts_24h : undefined} />

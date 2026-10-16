@@ -17,7 +17,7 @@ export async function GET() {
   try {
     let query = getAdminClient()
       .from("merchants")
-      .select("id, business_name, category, terminal_id, location, active_bank, active_wallet")
+      .select("id, business_name, category, kind, terminal_id, location, active_bank, active_wallet")
       .neq("kind", "RIDE_PARTNER") // ride-hailing companies are not merchants and never appear in a merchant list
       .order("business_name");
     if (authEnforced() && !isAdminPhone(guard.session?.ph)) query = query.eq("id", guard.session!.mid);
@@ -32,6 +32,7 @@ export async function GET() {
       id: m.id,
       business_name: m.business_name,
       category: m.category,
+      kind: m.kind === "DRIVER" ? "DRIVER" : "MERCHANT",
       terminal_id: m.terminal_id,
       location: m.location ?? null,
       routing: { bank: m.active_bank?.institution ?? null, wallet: m.active_wallet?.institution ?? null },

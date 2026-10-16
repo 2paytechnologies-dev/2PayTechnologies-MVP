@@ -21,8 +21,8 @@ export async function GET() {
   if (!guard.ok) return guard.res;
   try {
     const admin = getAdminClient();
-    const { data, error } = await admin.from("ride_partners").select("id, name, key_hint, active, contact_name, contact_phone, created_at, last_used_at").order("created_at", { ascending: false }).limit(200);
-    if (error) return err("Could not load companies. Has supabase/v2_6.sql been run?", 500);
+    const { data, error } = await admin.from("ride_partners").select("id, name, key_hint, active, allow_partner_accounts, contact_name, contact_phone, created_at, last_used_at").order("created_at", { ascending: false }).limit(200);
+    if (error) return err("Could not load companies. Has supabase/v2_7.sql been run?", 500);
     return NextResponse.json(data ?? [], { headers: NO_STORE });
   } catch (e) {
     if (e instanceof AdminConfigError) return err("Server misconfigured", 500);
@@ -74,7 +74,7 @@ export async function POST(req: Request) {
   }
 }
 
-/** { id, active } turns a company on or off at once; { id, rotate: true } replaces its key (the old one stops working) and shows the new one once. */
+/** { id, allow_partner_accounts } allows or stops the legacy mode where the company sends driver accounts itself; { id, active } turns a company on or off at once; { id, rotate: true } replaces its key (the old one stops working) and shows the new one once. */
 export async function PATCH(req: Request) {
   const guard = await requireAdmin();
   if (!guard.ok) return guard.res;
@@ -90,6 +90,13 @@ export async function PATCH(req: Request) {
       if (error) return err("Could not rotate the key", 500);
       await audit(admin, guard.session, req, { action: "ride.partner.rotate", targetType: "ride_partner", targetId: p.id, merchantId: p.merchant_id, details: { name: p.name } });
       return NextResponse.json({ id: p.id, api_key: k.key }, { headers: NO_STORE });
+    }
+    if (typeof body.allow_partner_accounts === "boolean") {
+      // Legacy mode: the company may send a driver's payout accounts with each ride. Off by default; drivers keep their own accounts in 2Pay.
+      const { error } = await admin.from("ride_partners").update({ allow_partner_accounts: body.allow_partner_accounts }).eq("id", p.id);
+      if (error) return err("Could not update the company", 500);
+      await audit(admin, guard.session, req, { action: body.allow_partner_accounts ? "ride.partner.accounts.allow" : "ride.partner.accounts.deny", targetType: "ride_partner", targetId: p.id, merchantId: p.merchant_id, details: { name: p.name } });
+      return NextResponse.json({ id: p.id, allow_partner_accounts: body.allow_partner_accounts }, { headers: NO_STORE });
     }
     if (typeof body.active !== "boolean") return err("active must be true or false", 400);
     const { error } = await admin.from("ride_partners").update({ active: body.active }).eq("id", p.id);

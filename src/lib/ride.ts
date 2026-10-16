@@ -74,12 +74,15 @@ export function buildDriverAccounts(raw: unknown): Built<SavedAccount[]> {
 }
 
 const ID_RE = /^[A-Za-z0-9._:-]{1,64}$/;
+/** A company's own id for a driver or a ride: letters, digits and . _ : - , up to 64. */
+export const isRideId = (v: unknown): v is string => typeof v === "string" && ID_RE.test(v);
 export const MAX_FARE = 1_000_000;
 
 export interface RideIntent {
   partnerRideId: string;
   driverId: string;
-  accounts: SavedAccount[];
+  /** Present only when a company sends the driver's accounts itself (a mode an admin must switch on for that company). Normally null: the driver's own 2Pay accounts are used. */
+  accounts: SavedAccount[] | null;
   fare: number;
 }
 
@@ -92,9 +95,13 @@ export function parseRideIntent(body: unknown): Built<RideIntent> {
   const fare = b.fare_amount;
   if (typeof fare !== "number" || !Number.isFinite(fare) || fare <= 0 || fare > MAX_FARE) return { ok: false, error: `fare_amount must be a number between 0 and ${MAX_FARE}` };
   if (Math.abs(Math.round(fare * 100) - fare * 100) > 1e-6) return { ok: false, error: "fare_amount can have at most 2 decimals" };
-  const accounts = buildDriverAccounts(b.driver_wallet_accounts);
-  if (!accounts.ok) return accounts;
-  return { ok: true, value: { partnerRideId: b.partner_ride_id, driverId: b.driver_id, accounts: accounts.value, fare: Math.round(fare * 100) / 100 } };
+  let accounts: SavedAccount[] | null = null;
+  if (b.driver_wallet_accounts !== undefined) {
+    const built = buildDriverAccounts(b.driver_wallet_accounts);
+    if (!built.ok) return built;
+    accounts = built.value;
+  }
+  return { ok: true, value: { partnerRideId: b.partner_ride_id, driverId: b.driver_id, accounts, fare: Math.round(fare * 100) / 100 } };
 }
 
 // ------------------------------------------------------------------ keys and links
@@ -150,3 +157,22 @@ export function chooseDriverAccount<T extends { id: string; institution: string 
 }
 
 export const kindOfInstitution = (name: string): "bank" | "wallet" => (isBank(name) ? "bank" : "wallet");
+
+// ------------------------------------------------------------------ linking a driver to a company
+export const LINK_CODE_TTL_MS = 30 * 60_000;
+const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no 0/O/1/I: easy to read out and type
+
+/** A short one-time code the company shows its driver ("ABCD-EFGH"); only its hash is kept. */
+export function newLinkCode() {
+  const bytes = randomBytes(8);
+  const raw = Array.from(bytes, (b) => CODE_ALPHABET[b % CODE_ALPHABET.length]).join("");
+  return { code: `${raw.slice(0, 4)}-${raw.slice(4)}`, hash: sha256(raw) };
+}
+
+/** What the driver typed, normalised (case, spaces and the dash do not matter); null if it cannot be a code. */
+export function normalizeLinkCode(input: unknown): string | null {
+  if (typeof input !== "string") return null;
+  const raw = input.toUpperCase().replace(/[\s-]/g, "");
+  return /^[A-HJ-NP-Z2-9]{8}$/.test(raw) ? raw : null;
+}
+export const hashLinkCode = (normalized: string) => sha256(normalized);

@@ -29,8 +29,8 @@ export async function GET(req: Request) {
     const now = new Date().toISOString();
     const head = { count: "exact" as const, head: true };
     const [total, verified, open] = await Promise.all([
-      admin.from("merchants").select("id", head).neq("kind", "RIDE_PARTNER"),
-      admin.from("merchants").select("id", head).neq("kind", "RIDE_PARTNER").eq("fayda_verified", true),
+      admin.from("merchants").select("id", head).neq("kind", "RIDE_PARTNER").neq("kind", "DRIVER"),
+      admin.from("merchants").select("id", head).neq("kind", "RIDE_PARTNER").neq("kind", "DRIVER").eq("fayda_verified", true),
       admin.from("fayda_sessions").select("merchant_id, attempts").is("consumed_at", null).gte("expires_at", now).limit(5000),
     ]);
     if (total.error) return NextResponse.json({ error: "Could not load the Fayda status. Has supabase/v2_5.sql been run?" }, { status: 500 });
@@ -45,7 +45,7 @@ export async function GET(req: Request) {
     let query = admin
       .from("merchants")
       .select("id, business_name, terminal_id, phone, kyc_status, fayda_verified, fayda_verified_at, fayda_verification_timestamp, fayda_transaction_id", { count: "exact" })
-      .neq("kind", "RIDE_PARTNER")
+      .neq("kind", "RIDE_PARTNER").neq("kind", "DRIVER")
       .order("business_name");
     if (filter === "VERIFIED") query = query.eq("fayda_verified", true);
     if (filter === "PENDING") query = query.eq("fayda_verified", false);

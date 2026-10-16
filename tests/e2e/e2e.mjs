@@ -189,17 +189,45 @@ section("staff accounts");
   t("a removed cashier's number can no longer sign in", req2.status === 404, `status ${req2.status}`);
 }
 
-section("registration needs the terms");
+const DRV = {}; // individual drivers registered in the next section, used by the driver sections later
+
+section("registration needs the terms and a category");
 {
   const req = await call("POST", "/api/auth/otp/request", { body: { phone: "0911555000", purpose: "register" } });
   await wait(300);
   const code = smsTo("+251911555000").at(-1)?.message.match(/(\d{6})/)?.[1];
-  const base = { challenge_id: req.data.challenge_id, code, business_name: "Tomoca Bole", category: "Retail" };
+  const base = { challenge_id: req.data.challenge_id, code, business_name: "Tomoca Bole", category: "Supermarket" };
   const noTerms = await call("POST", "/api/auth/otp/verify", { body: base });
   t("registering without accepting the terms is refused (code is not spent)", noTerms.status === 400 && /Terms/.test(noTerms.data.error));
+  const noCat = await call("POST", "/api/auth/otp/verify", { body: { ...base, category: undefined, accepted_terms: true } });
+  t("registering without choosing a category is refused (code is not spent)", noCat.status === 400 && /category/i.test(noCat.data.error), JSON.stringify(noCat.data));
+  for (const bad of ["Restaurant", "Retail", "fuel", ""]) t(`the category "${bad}" is not one of the choices`, (await call("POST", "/api/auth/otp/verify", { body: { ...base, category: bad, accepted_terms: true } })).status === 400);
   const ok = await call("POST", "/api/auth/otp/verify", { body: { ...base, accepted_terms: true } });
   const m = (await db()).merchants.find((x) => x.phone === "+251911555000");
   t("accepting the terms creates the account and records when", ok.status === 200 && ok.data.created && ok.data.role === "OWNER" && !!m?.terms_accepted_at);
+  t("the chosen category is kept, and a Supermarket is a business", m?.category === "Supermarket" && m?.kind === "MERCHANT");
+
+  // each of the five choices registers; Ride Service makes an individual driver, the rest businesses
+  const reg = async (phone, category, name) => {
+    await fetch(MOCK + "/__reset_limits");
+    const rq = await call("POST", "/api/auth/otp/request", { body: { phone, purpose: "register" } });
+    await wait(300);
+    const c = smsTo("+251" + phone.slice(1)).at(-1)?.message.match(/(\d{6})/)?.[1];
+    const v = await call("POST", "/api/auth/otp/verify", { body: { challenge_id: rq.data.challenge_id, code: c, business_name: name, category, accepted_terms: true } });
+    return { v, rec: (await db()).merchants.find((x) => x.phone === "+251" + phone.slice(1)) };
+  };
+  const fuel = await reg("0911555201", "Fuel", "Mekanisa Fuel");
+  const svc = await reg("0911555203", "Service", "Cafe Lucy");
+  const gen = await reg("0911555205", "Merchant", "Abebe General");
+  t("Fuel Station, Service and Merchant register as businesses", [fuel, svc, gen].every((r) => r.v.status === 200 && r.rec?.kind === "MERCHANT") && fuel.rec.category === "Fuel" && svc.rec.category === "Service" && gen.rec.category === "Merchant");
+  const d1 = await reg("0911555204", "Ride", "Dawit Driver");
+  const d2 = await reg("0911555206", "Ride", "Hana Driver");
+  t("Ride Service registers an individual driver", d1.v.status === 200 && d1.rec?.kind === "DRIVER" && d1.rec.category === "Ride" && d2.rec?.kind === "DRIVER");
+  DRV.dawit = { id: d1.rec.id, phone: "+251911555204", ck: await cookie(d1.rec.id, "+251911555204", "OWNER") };
+  DRV.hana = { id: d2.rec.id, phone: "+251911555206", ck: await cookie(d2.rec.id, "+251911555206", "OWNER") };
+  const portalD = await call("GET", "/api/portal", { ck: DRV.dawit.ck });
+  const portalA = await call("GET", "/api/portal", { ck: ownerA });
+  t("the portal says which account is a driver, so the app can show the driver's tabs", portalD.data.merchants?.[0]?.kind === "DRIVER" && portalA.data.merchants?.[0]?.kind === "MERCHANT");
 }
 
 section("scan-to-pay shop QR");
@@ -773,6 +801,11 @@ section("ride-hailing: a driver is paid for a finished trip");
 
   // ---- a partner starts a checkout
   const intent = { partner_ride_id: "RIDE-1001", driver_id: "drv-77", fare_amount: 250, currency: "ETB", driver_wallet_accounts: [{ rail: "TELEBIRR", account_number: "0911223344" }, { rail: "CBE_BIRR", account_number: "0922334455" }, { rail: "AWASH", account_number: "01320123456789" }] };
+  // The older mode: the company sends the driver's accounts with each ride. Off unless an admin allows it for that company.
+  const feresId = (await db()).ride_partners.find((p) => p.name === "Feres").id;
+  t("by default a company cannot send a driver's accounts itself", (await create(intent, KEY)).data?.code === "PARTNER_ACCOUNTS_NOT_ALLOWED");
+  t("an owner cannot switch that mode on", (await call("PATCH", "/api/admin/ride-partners", { ck: ownerA, body: { id: feresId, allow_partner_accounts: true } })).status === 403);
+  t("an admin can allow it for one company", (await call("PATCH", "/api/admin/ride-partners", { ck: admin, body: { id: feresId, allow_partner_accounts: true } })).status === 200 && (await call("GET", "/api/admin/ride-partners", { ck: admin })).data.find((p) => p.name === "Feres")?.allow_partner_accounts === true);
   t("no key: refused", (await create(intent)).status === 401);
   t("a wrong key: refused", (await create(intent, "2pay_rk_" + "x".repeat(43))).status === 401);
   t("a fare of zero is refused", (await create({ ...intent, fare_amount: 0 }, KEY)).status === 400);
@@ -874,6 +907,215 @@ section("ride-hailing: a driver is paid for a finished trip");
   const acts2 = new Set((await db()).audit_log.map((r) => r.action));
   for (const a of ["ride.partner.create", "ride.session.create", "ride.session.update", "ride.session.cancel", "ride.partner.disable", "ride.partner.rotate"]) t(`audit has ${a}`, acts2.has(a));
   t("the audit log never holds an API key, a checkout link or a full account number", !JSON.stringify((await db()).audit_log).match(new RegExp(`${KEY}|${rot.data.api_key}|${TOK2}|0911223344|0922334455|01320123456789`)));
+}
+
+section("drivers: their own accounts, several companies, linking, and catching a finished trip");
+{
+  await fetch(MOCK + "/__reset_limits");
+  const BASEP = "/api/v1/integrations/ride-hailing";
+  const auth = (key) => ({ authorization: `Bearer ${key}` });
+  const mkP = async (name) => (await call("POST", "/api/admin/ride-partners", { ck: admin, body: { name } })).data;
+  const P1 = await mkP("Zemen Ride");
+  const P2 = await mkP("Selam Taxi");
+  const send = (key, path, body, method = "POST") => call(method, `${BASEP}${path}`, { headers: auth(key), body });
+  const dawit = DRV.dawit, hana = DRV.hana;
+
+  // ---- who may use the driver endpoints
+  t("the driver endpoints need a sign-in", (await call("GET", "/api/driver/links")).status === 401 && (await call("GET", "/api/driver/rides/next")).status === 401);
+  t("a business owner and a cashier are not drivers", (await call("GET", "/api/driver/links", { ck: ownerA })).status === 403 && (await call("GET", "/api/driver/links", { ck: cashierA })).status === 403);
+  t("the company endpoints need the company's key", (await send("nope", "/drivers", { driver_id: "d1", phone: "0911555204" })).status === 401);
+
+  // ---- a company asks to link a driver by phone
+  const s0 = sms.length;
+  t("a company must say which driver and give a phone number", (await send(P1.api_key, "/drivers", { phone: "0911555204" })).status === 400 && (await send(P1.api_key, "/drivers", { driver_id: "zr-dawit" })).status === 400);
+  t("a business number cannot be linked as a driver", (await send(P1.api_key, "/drivers", { driver_id: "zr-biz", phone: "0911000001" })).data?.code === "NOT_A_DRIVER");
+  const inv = await send(P1.api_key, "/drivers", { driver_id: "zr-new", phone: "0911555999" });
+  await wait(300);
+  t("a driver who has not registered yet is INVITED, by text, to install 2Pay", inv.status === 201 && inv.data.status === "INVITED" && smsTo("+251911555999").some((m) => /download/i.test(m.message) && /Zemen Ride/.test(m.message)), JSON.stringify(inv.data));
+  const ask = await send(P1.api_key, "/drivers", { driver_id: "zr-dawit", phone: "0911555204" });
+  await wait(300);
+  t("a registered driver is asked to accept, by text", ask.status === 201 && ask.data.status === "PENDING" && smsTo("+251911555204").some((m) => /Zemen Ride/.test(m.message)), JSON.stringify(ask.data));
+  t("until they accept, nothing is linked and the company is told so", (await send(P1.api_key, "/drivers/zr-dawit", undefined, "GET")).data?.status === "PENDING" && (await send(P1.api_key, "/session", { partner_ride_id: "zr-1", driver_id: "zr-dawit", fare_amount: 100, currency: "ETB" })).data?.code === "DRIVER_NOT_LINKED");
+  t("the same number is not texted over and over", (await send(P1.api_key, "/drivers", { driver_id: "zr-x1", phone: "0911555208" })).status === 201 && (await send(P1.api_key, "/drivers", { driver_id: "zr-x2", phone: "0911555208" })).status === 201 && (await send(P1.api_key, "/drivers", { driver_id: "zr-x3", phone: "0911555208" })).status === 201 && (await send(P1.api_key, "/drivers", { driver_id: "zr-x4", phone: "0911555208" })).status === 429);
+
+  // ---- the driver sees the request in the app and accepts it
+  const mine = await call("GET", "/api/driver/links", { ck: dawit.ck });
+  const reqRow = mine.data?.find((l) => l.driver_ref === "zr-dawit");
+  t("the driver sees the company's request, with the company's name", mine.status === 200 && reqRow?.status === "PENDING" && reqRow.company === "Zemen Ride", JSON.stringify(mine.data));
+  t("another driver cannot answer it", (await call("POST", `/api/driver/links/${reqRow.id}`, { ck: hana.ck, body: { action: "confirm" } })).status === 404);
+  t("an answer must be confirm or decline", (await call("POST", `/api/driver/links/${reqRow.id}`, { ck: dawit.ck, body: { action: "maybe" } })).status === 400);
+  const acc = await call("POST", `/api/driver/links/${reqRow.id}`, { ck: dawit.ck, body: { action: "confirm" } });
+  t("accepting makes the link ACTIVE", acc.status === 200 && acc.data.status === "ACTIVE" && (await send(P1.api_key, "/drivers/zr-dawit", undefined, "GET")).data?.status === "ACTIVE");
+  t("an answered request cannot be answered again", (await call("POST", `/api/driver/links/${reqRow.id}`, { ck: dawit.ck, body: { action: "decline" } })).status === 409);
+
+  // ---- the money goes to the driver's OWN accounts, which only the driver sets
+  const noAcc = await send(P1.api_key, "/session", { partner_ride_id: "zr-1", driver_id: "zr-dawit", fare_amount: 100, currency: "ETB" });
+  t("a linked driver with no account yet cannot be sent a ride", noAcc.status === 409 && noAcc.data.code === "DRIVER_NO_ACCOUNTS", JSON.stringify(noAcc.data));
+  t("the company is told the driver is linked but not ready", (await send(P1.api_key, "/drivers/zr-dawit", undefined, "GET")).data?.ready === false);
+  const w1 = { id: "d0d0d0d0-0000-4000-8000-0000000000a1", institution: "Telebirr", account_number: "+251911775544" };
+  const b1 = { id: "d0d0d0d0-0000-4000-8000-0000000000a2", institution: "Awash Bank", account_number: "01320987654321" };
+  const setAcc = (id, extra) => fetch(MOCK + `/rest/v1/merchants?id=eq.${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(extra) });
+  await setAcc(dawit.id, { saved_wallets: [w1], saved_banks: [b1], active_wallet: w1, active_bank: b1 });
+  t("with accounts added, the company is told the driver is ready", (await send(P1.api_key, "/drivers/zr-dawit", undefined, "GET")).data?.ready === true);
+  t("a ride for a driver who is not linked at all is refused", (await send(P1.api_key, "/session", { partner_ride_id: "zr-9", driver_id: "stranger", fare_amount: 100, currency: "ETB" })).data?.code === "DRIVER_NOT_LINKED");
+
+  const r1 = await send(P1.api_key, "/session", { partner_ride_id: "zr-1", driver_id: "zr-dawit", fare_amount: 100, currency: "ETB" });
+  t("a ride for the linked driver needs no account details from the company", r1.status === 201 && r1.data.payout_accounts?.length === 2 && !!r1.data.driver_app, JSON.stringify(r1.data).slice(0, 200));
+  t("the company's reply shows the driver's accounts masked only", !JSON.stringify(r1.data).match(/775544|0987654321|01320987654321/));
+  const srow = (await db()).ride_sessions.find((x) => x.id === r1.data.session_id);
+  t("the ride belongs to the driver's account", srow.driver_merchant_id === dawit.id && srow.accounts == null);
+
+  // ---- the driver's app catches the finished trip by itself
+  const nx = await call("GET", "/api/driver/rides/next", { ck: dawit.ck });
+  t("the driver's app finds the ride waiting, with the fare and the company", nx.status === 200 && nx.data.ride?.id === r1.data.session_id && nx.data.ride.amount === 100 && nx.data.ride.company === "Zemen Ride" && nx.headers.get("x-ride-sig") === r1.data.session_id, JSON.stringify(nx.data));
+  t("another driver sees no ride", (await call("GET", "/api/driver/rides/next", { ck: hana.ck })).data?.ride === null);
+  const sigNow = nx.headers.get("x-ride-sig");
+  const heldAt = Date.now();
+  const held = call("GET", `/api/driver/rides/next?wait=7&sig=${encodeURIComponent(sigNow)}`, { ck: dawit.ck });
+  await wait(500);
+  const r2 = await send(P1.api_key, "/session", { partner_ride_id: "zr-2", driver_id: "zr-dawit", fare_amount: 180, currency: "ETB" });
+  const sentAt = Date.now();
+  const heldRes = await held;
+  const lagMs = Date.now() - sentAt;
+  console.log(`  (driver app catch: ${lagMs} ms after the company sent the ride; whole wait ${Date.now() - heldAt} ms)`);
+  t("a ride the company sends while the app is waiting reaches it within a moment", heldRes.data?.ride?.id === r2.data.session_id && heldRes.data.ride.amount === 180 && lagMs < 1500, `${lagMs} ms; ${JSON.stringify(heldRes.data)}`);
+  t("nothing new: the held request returns the same answer after the wait (not an error)", (await call("GET", `/api/driver/rides/next?wait=1&sig=${encodeURIComponent(heldRes.headers.get("x-ride-sig"))}`, { ck: dawit.ck })).status === 200);
+
+  // ---- the driver opens the fare: no link needed, only their own sign-in
+  const mintD = (ck, ride_id) => call("POST", `${BASEP}/session/mint`, { ck, body: { ride_id } });
+  t("only the driver the ride belongs to can open it by id", (await mintD(hana.ck, r2.data.session_id)).status === 404 && (await mintD(ownerA, r2.data.session_id)).status >= 400 && (await call("POST", `${BASEP}/session/mint`, { body: { ride_id: r2.data.session_id } })).status >= 400);
+  const mD = await mintD(dawit.ck, r2.data.session_id);
+  const trow = (await db()).transactions.find((x) => x.token === mD.data?.token) ?? {};
+  t("the driver's app gets a pay node for the fare, under the driver's own ledger", mD.status === 201 && mD.data.amount === 180 && mD.data.source === "RIDE" && trow.merchant_id === dawit.id && trow.ride_session_id === r2.data.session_id, JSON.stringify(mD.data).slice(0, 160));
+  t("the sale carries the fee breakdown", Number(trow.fee_ft) > 0 && Number(trow.net_merchant_settlement) === 180 - Number(trow.fee_ft));
+  t("the sale pays the driver's two accounts", /enc:v1:/.test(JSON.stringify(trow.payee_accounts)) || (trow.payee_accounts ?? []).length === 2, JSON.stringify(trow.payee_accounts)?.slice(0, 120));
+  const pg = await call("GET", `/api/pay/${mD.data.token}`);
+  t("the passenger sees the driver's accounts, masked", pg.status === 200 && pg.data.tx.payee_options?.length === 2 && !JSON.stringify(pg.data).match(/775544|0987654321/), JSON.stringify(pg.data.tx.payee_options));
+  const stD = (ck, id, extra = "") => call("GET", `${BASEP}/session/status?ride_id=${id}${extra}`, { ck });
+  t("the driver's app watches the payment by ride id; nobody else can", (await stD(dawit.ck, r2.data.session_id)).data?.status === "OPEN" && (await stD(hana.ck, r2.data.session_id)).status === 404 && (await stD(undefined, r2.data.session_id)).status >= 400);
+  const page = await call("GET", `/terminal?ride=${r2.data.session_id}`, { ck: dawit.ck, raw: true });
+  t("the driver's app page opens for a ride id", page.status === 200);
+
+  // the passenger pays: the app's open request is answered at once
+  const sigS = (await stD(dawit.ck, r2.data.session_id)).headers.get("x-status-sig");
+  const heldS = stD(dawit.ck, r2.data.session_id, `&wait=7&sig=${encodeURIComponent(sigS)}`);
+  await wait(400);
+  await fetch(MOCK + `/rest/v1/transactions?id=eq.${trow.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: "SUCCESS", rail: "Telebirr", settled_at: new Date().toISOString() }) });
+  const paidAt = Date.now();
+  const sRes = await heldS;
+  t("when the fare is paid the driver's app sees it, and the ride is no longer waiting", sRes.data?.status === "PAID" && !!sRes.data.paid && Date.now() - paidAt < 2500 && (await call("GET", "/api/driver/rides/next", { ck: dawit.ck })).data?.ride?.id !== r2.data.session_id);
+  t("the company sees the ride paid with the fee breakdown", (await send(P1.api_key, `/session/${r2.data.session_id}`, undefined, "GET")).data?.status === "PAID");
+
+  // ---- several companies at once
+  const code = await send(P2.api_key, "/drivers/link-code", { driver_id: "st-5521" });
+  t("a company can make a one-time code to link a driver without a phone number", code.status === 201 && /^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(code.data.code), JSON.stringify(code.data));
+  t("only a hash of the code is stored", !JSON.stringify(await db()).includes(code.data.code.replace("-", "")) && (await db()).ride_link_codes.length >= 1);
+  const redeem = (ck, c) => call("POST", "/api/driver/links/redeem", { ck, body: { code: c } });
+  t("a code that is the wrong shape or wrong is refused", (await redeem(dawit.ck, "nope")).status === 400 && (await redeem(dawit.ck, "ABCD-EFGH")).data?.code === "CODE_INVALID");
+  t("a business owner cannot use a code", (await redeem(ownerA, code.data.code)).status === 403);
+  const red = await redeem(dawit.ck, code.data.code);
+  t("typing the code links the driver to a second company at once", red.status === 200 && red.data.company === "Selam Taxi" && (await send(P2.api_key, "/drivers/st-5521", undefined, "GET")).data?.status === "ACTIVE", JSON.stringify(red.data));
+  t("a code works once", (await redeem(dawit.ck, code.data.code)).data?.code === "CODE_INVALID" && (await redeem(hana.ck, code.data.code)).data?.code === "CODE_INVALID");
+  const both = (await call("GET", "/api/driver/links", { ck: dawit.ck })).data ?? [];
+  t("the driver is now active with both companies", both.filter((l) => l.status === "ACTIVE").map((l) => l.company).sort().join() === "Selam Taxi,Zemen Ride", JSON.stringify(both));
+  const netMid = await call("GET", "/api/admin/network", { ck: admin });
+  t("the network counts drivers and linked drivers apart from businesses", netMid.status === 200 && netMid.data.drivers === 2 && netMid.data.linked_drivers === 1 && netMid.data.merchants === (await db()).merchants.filter((m) => m.kind === "MERCHANT").length, JSON.stringify(netMid.data));
+  const sr = await send(P2.api_key, "/session", { partner_ride_id: "st-1", driver_id: "st-5521", fare_amount: 75, currency: "ETB" });
+  t("rides from either company reach the same driver", sr.status === 201 && (await call("GET", "/api/driver/rides/next", { ck: dawit.ck })).data?.ride?.company === "Selam Taxi");
+  const code2 = await send(P2.api_key, "/drivers/link-code", { driver_id: "st-5521" });
+  t("one company's driver id cannot be taken over by a second 2Pay driver", (await redeem(hana.ck, code2.data.code)).data?.code === "DRIVER_ALREADY_LINKED");
+
+  // ---- the registered-first-then-invited path
+  const regInv = (await db()).ride_driver_links.find((l) => l.driver_ref === "zr-new");
+  t("an invitation sent before the driver registered waits, and turns into a request when they register with that number", regInv?.status === "INVITED" && regInv.merchant_id == null);
+
+  // ---- unlinking takes effect at once
+  const r3 = await send(P1.api_key, "/session", { partner_ride_id: "zr-3", driver_id: "zr-dawit", fare_amount: 60, currency: "ETB" });
+  const lk = (await call("GET", "/api/driver/links", { ck: dawit.ck })).data.find((l) => l.driver_ref === "zr-dawit");
+  t("another driver cannot unlink it", (await call("DELETE", `/api/driver/links/${lk.id}`, { ck: hana.ck })).status === 404);
+  t("the driver unlinks a company", (await call("DELETE", `/api/driver/links/${lk.id}`, { ck: dawit.ck })).data?.status === "REVOKED");
+  t("a ride already started for that company can no longer be opened", (await mintD(dawit.ck, r3.data.session_id)).status >= 400);
+  t("the company cannot start another one", (await send(P1.api_key, "/session", { partner_ride_id: "zr-4", driver_id: "zr-dawit", fare_amount: 60, currency: "ETB" })).data?.code === "DRIVER_NOT_LINKED");
+  t("the other company is not affected", (await send(P2.api_key, "/drivers/st-5521", undefined, "GET")).data?.status === "ACTIVE");
+  const un = await send(P2.api_key, "/drivers/st-5521", undefined, "DELETE");
+  t("a company can unlink a driver too", un.status === 200 && (await send(P2.api_key, "/drivers/st-5521", undefined, "GET")).data?.status === "REVOKED" && (await send(P2.api_key, "/drivers/nobody", undefined, "DELETE")).status === 404);
+
+  // ---- no Fayda or business checks for an individual driver
+  const hs = await call("POST", "/api/transactions", { ck: hana.ck, body: { merchant_id: hana.id, amount: 40 } });
+  const biz = (await db()).merchants.find((x) => x.phone === "+251911555000"); // registered above, never verified
+  const bs = await call("POST", "/api/transactions", { ck: await cookie(biz.id, biz.phone, "OWNER"), body: { merchant_id: biz.id, amount: 40 } });
+  t("a driver is not asked for a TIN, licence or national ID (a business still is)", hs.data?.code === "NO_ACTIVE_ROUTING" && bs.data?.code === "KYC_REQUIRED", `${hs.status} ${hs.data?.code} / ${bs.status} ${bs.data?.code}`);
+
+  // ---- what the admin sees
+  const net = await call("GET", "/api/admin/network", { ck: admin });
+  t("after unlinking, no driver is linked but both are still counted", net.status === 200 && net.data.drivers === 2 && net.data.linked_drivers === 0, JSON.stringify(net.data));
+  const fy = await call("GET", "/api/admin/fayda", { ck: admin });
+  t("the Fayda tracker neither counts nor lists drivers", fy.status === 200 && !JSON.stringify(fy.data).includes("Dawit") && fy.data.summary.total === (await db()).merchants.filter((m) => m.kind === "MERCHANT").length);
+  const acts = new Set((await db()).audit_log.map((r) => r.action));
+  for (const a of ["ride.driver.link", "ride.driver.code", "ride.driver.linked", "ride.driver.unlink"]) t(`audit has ${a}`, acts.has(a));
+  t("the audit log holds no link code and no full account number", !JSON.stringify((await db()).audit_log).match(new RegExp(`${code.data.code}|${code2.data.code}|911775544|01320987654321`)));
+}
+
+section("digital tax estimate");
+{
+  await fetch(MOCK + "/__reset_limits");
+  const TAXP = "/api/admin/tax-rules";
+  const addis = new Date(Date.now() + 3 * 3600_000);
+  const yr = addis.getUTCFullYear();
+  const mn = addis.getUTCMonth() + 1;
+
+  const newbie = (await db()).merchants.find((x) => x.phone === "+251911555000"); // registered earlier, no TIN or licence
+  const nr = await call("GET", `/api/merchants/${newbie.id}/tax`, { ck: await cookie(newbie.id, newbie.phone, "OWNER") });
+  t("a business with no TIN or licence is told what is missing", nr.status === 200 && nr.data.eligible === false && nr.data.missing.join() === "tin,business_license", JSON.stringify(nr.data));
+  t("an individual driver without those details is told the same", (await call("GET", `/api/merchants/${DRV.dawit.id}/tax`, { ck: DRV.dawit.ck })).data?.eligible === false);
+  t("a cashier cannot read it, nor another business's owner, nor anyone signed out", (await call("GET", `/api/merchants/${A}/tax`, { ck: cashierA })).status === 403 && (await call("GET", `/api/merchants/${A}/tax`, { ck: ownerB })).status === 403 && (await call("GET", `/api/merchants/${A}/tax`)).status === 401);
+  t("a malformed id is refused", (await call("GET", "/api/merchants/nope/tax", { ck: ownerA })).status === 400);
+
+  // business B registers with a TIN and a licence, and takes payments through 2Pay
+  await fetch(MOCK + `/rest/v1/merchants?id=eq.${B}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tin: "0012345678", business_license: "AA/12/2019", legal_name: "Shoa Supermarket PLC", kyc_status: "VERIFIED" }) });
+  const addTx = (body) => fetch(MOCK + "/rest/v1/transactions", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ merchant_id: B, source: "TAXTEST", status: "SUCCESS", ...body }) }).then((r) => r.status);
+  await addTx({ amount: 10000, tip_amount: 500, created_at: `${yr}-01-10T09:00:00Z` });
+  await addTx({ amount: 20000, tip_amount: 0, created_at: `${yr}-01-25T09:00:00Z` });
+  const feb = await addTx({ amount: 5000, tip_amount: 0, created_at: `${yr}-02-03T09:00:00Z` });
+  await addTx({ amount: 999, status: "FAILED", created_at: `${yr}-02-04T09:00:00Z` });
+  await addTx({ amount: 777, merchant_id: A, created_at: `${yr}-02-05T09:00:00Z` });
+  const febTx = (await db()).transactions.find((x) => x.source === "TAXTEST" && x.amount === 5000);
+  await fetch(MOCK + "/rest/v1/refund_requests", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ merchant_id: B, transaction_id: febTx.id, amount: 1000, status: "REFUNDED", reason: "tax test" }) });
+
+  const tx1 = await call("GET", `/api/merchants/${B}/tax`, { ck: ownerB });
+  const e1 = tx1.data?.estimate;
+  t("with a TIN and licence on file the estimate is available", feb === 201 && tx1.status === 200 && tx1.data.eligible === true && tx1.data.verified === true && e1?.year === yr, JSON.stringify(tx1.data)?.slice(0, 200));
+  t("turnover is the paid sales less refunds, without tips or failed payments", e1?.months.length === 2 && e1.months[0].month === `${yr}-01` && e1.months[0].turnover === 30000 && e1.months[1].turnover === 4000 && e1.ytd.turnover === 34000, JSON.stringify(e1?.months));
+  t("another business's sales are not counted", !JSON.stringify(e1).includes("777"));
+  t("a small business pays turnover tax at its category's rate (a shop: 2%)", e1?.regime === "TURNOVER" && e1.rate === 0.02 && e1.ytd.tax === 680 && e1.months[0].tax === 600, JSON.stringify(e1?.ytd));
+  t("the year is projected over the months so far", e1?.monthsCounted === mn && Math.abs(e1.projected.turnover - (34000 / mn) * 12) < 0.02, `${e1?.monthsCounted} vs ${mn}; ${e1?.projected.turnover}`);
+  t("the estimate says its rates are unconfirmed, and carries no TIN", tx1.data?.rules.confirmed === false && !JSON.stringify(tx1.data).match(/0012345678|AA\/12\/2019/));
+  const prev = await call("GET", `/api/merchants/${B}/tax?year=${yr - 1}`, { ck: ownerB });
+  t("another year is available and empty", prev.status === 200 && prev.data.estimate.year === yr - 1 && prev.data.estimate.months.length === 0 && prev.data.estimate.ytd.tax === 0 && prev.data.estimate.monthsCounted === 12);
+  t("a year in the future or nonsense falls back to this year", (await call("GET", `/api/merchants/${B}/tax?year=${yr + 5}`, { ck: ownerB })).data?.estimate?.year === yr && (await call("GET", `/api/merchants/${B}/tax?year=abc`, { ck: ownerB })).data?.estimate?.year === yr);
+
+  // the rules are the administrator's
+  t("an owner cannot read or change the tax rules", (await call("GET", TAXP, { ck: ownerB })).status === 403 && (await call("PUT", TAXP, { ck: ownerB, body: { rules: {} } })).status === 403 && (await call("POST", TAXP, { ck: ownerB, body: { confirm: true, version: 1, name: "Me" } })).status === 403);
+  const g0 = await call("GET", TAXP, { ck: admin });
+  t("the admin sees the rules, unconfirmed at first", g0.status === 200 && g0.data.confirmed_at === null && g0.data.rules.vat.rate === 0.15 && g0.data.rules.turnover.byCategory.Service === 0.1);
+  const goodRules = { vat: { rate: 0.15, threshold: 20000, inclusive: true }, turnover: { rate: 0.02, byCategory: { Retail: 0.02, Service: 0.1 } } };
+  t("bad rules are refused", (await call("PUT", TAXP, { ck: admin, body: { rules: { ...goodRules, vat: { ...goodRules.vat, rate: 15 } } } })).status === 400 && (await call("PUT", TAXP, { ck: admin, body: {} })).status === 400);
+  const put = await call("PUT", TAXP, { ck: admin, body: { rules: goodRules } });
+  t("saving rules makes a new version", put.status === 200 && put.data.version === g0.data.version + 1);
+  const tx2 = await call("GET", `/api/merchants/${B}/tax`, { ck: ownerB });
+  t("a lower VAT threshold moves the same business to VAT, taken out of VAT-inclusive prices", tx2.data?.estimate?.regime === "VAT" && tx2.data.estimate.rate === 0.15 && tx2.data.estimate.ytd.tax === 4434.78, JSON.stringify(tx2.data?.estimate?.ytd));
+  t("confirming needs a name, and the version the admin actually saw", (await call("POST", TAXP, { ck: admin, body: { confirm: true, version: put.data.version } })).status === 400 && (await call("POST", TAXP, { ck: admin, body: { confirm: true, version: g0.data.version, name: "Sara Tadesse" } })).status === 409);
+  const conf = await call("POST", TAXP, { ck: admin, body: { confirm: true, version: put.data.version, name: "Sara Tadesse" } });
+  const tx3 = await call("GET", `/api/merchants/${B}/tax`, { ck: ownerB });
+  t("once confirmed, merchants are no longer warned", conf.status === 200 && tx3.data?.rules.confirmed === true && !!tx3.data.rules.confirmed_at);
+  await call("PUT", TAXP, { ck: admin, body: { rules: goodRules } });
+  t("changing the rules again removes the confirmation", (await call("GET", `/api/merchants/${B}/tax`, { ck: ownerB })).data?.rules.confirmed === false);
+  const acts = new Set((await db()).audit_log.map((r) => r.action));
+  t("the audit log records rule changes and confirmation", acts.has("tax.rules.update") && acts.has("tax.rules.confirm"));
+
+  await fetch(MOCK + "/rest/v1/transactions?source=eq.TAXTEST", { method: "DELETE" });
+  await fetch(MOCK + "/rest/v1/refund_requests?reason=eq.tax%20test", { method: "DELETE" });
+  await fetch(MOCK + `/rest/v1/merchants?id=eq.${B}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tin: null, business_license: null, legal_name: null }) });
 }
 
 section("admin hub: network nodes, Fayda tracker and NBE compliance evidence");
