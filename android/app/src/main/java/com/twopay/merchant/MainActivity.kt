@@ -133,6 +133,11 @@ class MainActivity : ComponentActivity() {
         web.loadUrl(startUrl)
     }
 
+    /** Tells the page how an app update is going (one of a fixed set of words, never free text). */
+    fun notifyUpdate(status: String) {
+        runOnUiThread { web.evaluateJavascript("window.dispatchEvent(new CustomEvent('twopay:update',{detail:'$status'}))", null) }
+    }
+
     /** WebView has no window.print(); hand the page to the system print service instead. */
     fun printPage() {
         try {

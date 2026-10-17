@@ -1,8 +1,8 @@
 {
-    "version":  "2.6.0",
+    "version":  "2.7.0",
     "minVersion":  "2.0.0",
-    "apk":  "/downloads/2pay-merchant-2.6.0.apk",
-    "notes":  "2.6.0: same app as 2.5.0 (all V2.6 changes are on the website and reach phones at once): self-service key reset, separate ride companies, faster voice, Sign out",
-    "sha256":  "2241ff1f26b59a85c3a5fd2486aaafde75063693e602f0f330de622c150bb9d1",
-    "size":  1790699
+    "apk":  "/downloads/2pay-merchant-2.7.0.apk",
+    "notes":  "2.7.0: the Update button now downloads, checks and installs updates from inside the app. Drivers, categories and the tax estimate are on the website and reach phones at once.",
+    "sha256":  "3b05bcf082110596b4d83f562cdb68c74a15e5888394e6d51f1930623582f546",
+    "size":  1794231
 }

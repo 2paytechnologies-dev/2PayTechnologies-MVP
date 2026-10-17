@@ -16,8 +16,10 @@ import android.os.Environment
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.provider.MediaStore
+import android.net.Uri
 import android.provider.Settings
 import android.speech.tts.TextToSpeech
+import androidx.core.content.FileProvider
 import android.util.Base64
 import android.view.WindowManager
 import android.webkit.JavascriptInterface
@@ -25,6 +27,9 @@ import android.widget.Toast
 import com.twopay.merchant.nfc.TapPayload
 import org.json.JSONObject
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.security.MessageDigest
 import java.util.Locale
 
 /**
@@ -75,6 +80,83 @@ class NativeBridge(private val activity: MainActivity) {
     @JavascriptInterface
     fun clearPayUrl() {
         TapPayload.clear()
+    }
+
+    @Volatile private var updating = false
+
+    /**
+     * An in-app update: downloads the APK from OUR site, checks its SHA-256 against the value the page read from latest.json, and hands it to the
+     * system installer (which still asks the person to confirm). Only an https link on the 2Pay host to /downloads/2pay-merchant-<version>.apk is
+     * accepted. Progress reaches the page as a `twopay:update` event: downloading, permission, installing, or error:download / error:checksum /
+     * error:install. Returns false when the link or checksum is refused or an update is already running.
+     */
+    @JavascriptInterface
+    fun installUpdate(url: String, sha256: String): Boolean {
+        val uri = try { java.net.URI(url) } catch (_: Exception) { return false }
+        val path = uri.path.orEmpty()
+        if (uri.scheme != "https" || !uri.host.equals(BuildConfig.SITE_HOST, ignoreCase = true) || uri.query != null || uri.fragment != null) return false
+        if (!Regex("^/downloads/2pay-merchant-[0-9]+(\\.[0-9]+){1,3}\\.apk$").matches(path)) return false
+        val want = sha256.lowercase(Locale.ROOT)
+        if (!Regex("^[0-9a-f]{64}$").matches(want)) return false
+        if (updating) return false
+        updating = true
+        Thread {
+            try {
+                val dir = File(activity.cacheDir, "updates").apply { mkdirs() }
+                val file = File(dir, "update.apk")
+                // A copy already downloaded and verified (for example before the person allowed installing) is reused.
+                if (!(file.exists() && sha256Of(file) == want)) {
+                    activity.notifyUpdate("downloading")
+                    file.delete()
+                    val conn = (URL(url).openConnection() as HttpURLConnection).apply { connectTimeout = 15_000; readTimeout = 30_000; instanceFollowRedirects = false }
+                    if (conn.responseCode != 200) { activity.notifyUpdate("error:download"); return@Thread }
+                    val md = MessageDigest.getInstance("SHA-256")
+                    var total = 0L
+                    conn.inputStream.use { input -> file.outputStream().use { out ->
+                        val buf = ByteArray(64 * 1024)
+                        while (true) {
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            total += n
+                            if (total > 60L * 1024 * 1024) { file.delete(); activity.notifyUpdate("error:download"); return@Thread }
+                            md.update(buf, 0, n); out.write(buf, 0, n)
+                        }
+                    } }
+                    if (md.digest().joinToString("") { "%02x".format(it) } != want) { file.delete(); activity.notifyUpdate("error:checksum"); return@Thread }
+                }
+                activity.runOnUiThread { launchInstaller(file) }
+            } catch (_: Exception) {
+                activity.notifyUpdate("error:download")
+            } finally {
+                updating = false
+            }
+        }.start()
+        return true
+    }
+
+    private fun sha256Of(file: File): String = try {
+        val md = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input -> val buf = ByteArray(64 * 1024); while (true) { val n = input.read(buf); if (n < 0) break; md.update(buf, 0, n) } }
+        md.digest().joinToString("") { "%02x".format(it) }
+    } catch (_: Exception) { "" }
+
+    private fun launchInstaller(file: File) {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !activity.packageManager.canRequestPackageInstalls()) {
+                // First time: the person must allow this app to install, then press Update again (the download is kept).
+                activity.notifyUpdate("permission")
+                activity.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${activity.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                return
+            }
+            val apk = FileProvider.getUriForFile(activity, "${activity.packageName}.updates", file)
+            activity.startActivity(
+                Intent(Intent.ACTION_VIEW).setDataAndType(apk, "application/vnd.android.package-archive")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+            activity.notifyUpdate("installing")
+        } catch (_: Exception) {
+            activity.notifyUpdate("error:install")
+        }
     }
 
     /** HCE only answers reliably while the screen is on, so the terminal holds it on during a sale. */

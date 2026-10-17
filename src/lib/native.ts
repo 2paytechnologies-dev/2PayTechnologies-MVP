@@ -27,6 +27,7 @@ interface Bridge {
   vibrate(ms: number): void;
   reload(): void;
   print?(): void; // added in 2.1.0; older apps simply do not have it
+  installUpdate?(url: string, sha256: string): boolean; // added in 2.7.0: download, verify and hand the new APK to the installer
 }
 
 declare global {

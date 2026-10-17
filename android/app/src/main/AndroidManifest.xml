@@ -4,6 +4,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.NFC" />
     <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Lets the app offer its own update: it downloads the new APK from the 2Pay site and hands it to the system installer (the person still confirms). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Lets the spoken "Paid" be played a few dB louder. -->
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
@@ -61,6 +63,15 @@
                 <data android:scheme="https" android:host="${hostName}" android:pathPrefix="/join" />
             </intent-filter>
         </activity>
+
+        <!-- The downloaded update APK is shared with the system installer through this provider (cache/updates only). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.updates"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- Tap-to-pay: while a sale is waiting, a tap from any phone is answered as an NFC tag carrying the pay link. -->
         <service

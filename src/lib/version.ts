@@ -15,6 +15,9 @@ export interface LatestApp {
   minVersion: string;
   apk: string;
   notes?: string;
+  /** SHA-256 of the APK, checked before it is installed (or saved). */
+  sha256?: string;
+  size?: number;
 }
 
 export type UpdateState = "current" | "available" | "required";
