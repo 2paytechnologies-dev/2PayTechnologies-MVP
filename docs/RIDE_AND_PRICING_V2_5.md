@@ -1,4 +1,4 @@
-# V2.5: ride-hailing checkout, Fayda FAN e-KYC, bank logos, tiered fees with VAT
+# V2.5: ride-hailing checkout, Fayda FAN e-KYC, bank logos, fees with VAT (fee formula revised in V2.7, section 4)
 
 Run `supabase/v2_5.sql` **before** deploying (part of `all_migrations.sql`). 2Pay is still non-custodial.
 
@@ -105,21 +105,39 @@ for the app grid, for the merchant's rails and for a driver's accounts.
 
 ---
 
-## 4. Tiered fees with 15% VAT
+## 4. The fee formula, with 15% VAT (revised in V2.7; first brought in with V2.5)
 
-`src/lib/pricing/engine.ts` (`priceTransaction`), replacing the old formula:
+`src/lib/pricing/engine.ts` (`priceTransaction`). For an amount A (ETB):
 
-| Amount (ETB) | Fee before VAT | + 15% VAT | Total deducted |
-|---|---|---|---|
-| under 100 | 0.50 | 0.075 | **0.575** |
-| 100 to under 500 | 0.86 rising to 0.989: `0.86 + ((T - 100) / 400) * 0.129` | 15% of that | base x 1.15 |
-| 500 to under 5,000 | 1.50 | 0.225 | **1.725** |
-| 5,000 to under 10,000 | 2.00 | 0.300 | **2.300** |
-| 10,000 and over | 5.00 (hard cap) | 0.750 | **5.750** |
+**F_t = max(0.10, min(1.5% x A, 0.30 + 0.40 x ln(1 + A/100), 3.00)), rounded to the nearest santim.**
+**VAT = 15% x F_t, rounded to the nearest santim. Total = F_t + VAT, deducted from the merchant.** `net_merchant_settlement = A - total`.
 
-VAT is charged on 2Pay's fee only. Figures are held in ten-thousandths of an ETB (integer arithmetic, so no rounding drift); `net_merchant_settlement = amount - total fee`.
-The schedule jumps at 100 ETB (0.50 to 0.86) and at 500 ETB (about 0.989 to 1.50) because those are the published brackets. A payment too small to cover its own fee (about 0.58 ETB) is refused (`AMOUNT_TOO_SMALL`).
+| Part | Role | Active range |
+|---|---|---|
+| 0.10 | Minimum fee | A below about 6.7 ETB |
+| 1.5% x A | Micro-ticket guard | about 6.7 to 26 ETB |
+| 0.30 + 0.40 x ln(1 + A/100) | Smooth curve, no tier jumps | about 26 to 85,300 ETB |
+| 3.00 | Maximum fee | A of about 85,300 ETB and over |
 
+| Amount | F_t | VAT | Total | F_t / A |
+|---|---|---|---|---|
+| 5 | 0.10 | 0.02 | 0.12 | 2.00% |
+| 10 | 0.15 | 0.02 | 0.17 | 1.50% |
+| 25 | 0.38 | 0.06 | 0.44 | 1.50% |
+| 50 | 0.46 | 0.07 | 0.53 | 0.92% |
+| 100 | 0.58 | 0.09 | 0.67 | 0.58% |
+| 200 | 0.74 | 0.11 | 0.85 | 0.37% |
+| 500 | 1.02 | 0.15 | 1.17 | 0.20% |
+| 1,000 | 1.26 | 0.19 | 1.45 | 0.126% |
+| 2,500 | 1.60 | 0.24 | 1.84 | 0.064% |
+| 5,000 | 1.87 | 0.28 | 2.15 | 0.037% |
+| 10,000 | 2.15 | 0.32 | 2.47 | 0.022% |
+| 25,000 | 2.51 | 0.38 | 2.89 | 0.010% |
+| 50,000 | 2.79 | 0.42 | 3.21 | 0.006% |
+| 85,300 and over | 3.00 | 0.45 | 3.45 | cap |
+
+VAT is charged on 2Pay's fee only. The fee and VAT are worked out in whole santim (so the VAT rounding matches this table exactly); amounts are held in ten-thousandths of an ETB (integers, no rounding drift). There are no tier jumps. A payment smaller than its own fee (below about 0.12 ETB) is refused (`AMOUNT_TOO_SMALL`).
+The only constants to change once the payment switch confirms its per-transaction cost are `FEE_PARAMS.floor` (0.10), `.base` (0.30) and `.slope` (0.40). Sales already recorded keep the fee they were charged; the change applies to sales made after it is deployed.
 **Where it is recorded.** `createPayNode` (used by `POST /api/transactions`, the shop QR and ride sales; this repository has no `/api/tokens/mint`, the cashier terminal's "mint" is `POST /api/transactions`) stores on every sale
 `base_fee`, `vat_fee`, `net_merchant_settlement`, and `fee_ft` (the total, so existing reports keep working). Sales made before V2.5 keep these three empty. The admin hub's old fee simulator is replaced by the schedule and a calculator,
 so nothing on screen contradicts what is charged.

@@ -684,17 +684,17 @@ section("forgotten security key: the person resets it themselves (a phone code, 
   const au = (await db()).audit_log.filter((r) => r.action === "vault.key_reset.self").at(-1);
   t("the audit log records the reset, and no key", au?.details?.approver === "OWNER" && au?.details?.fayda_checked === false && !JSON.stringify((await db()).audit_log).match(/902817|615243|337155/), JSON.stringify(au));
 }
-section("pricing: the tiered fee and VAT are recorded on every sale");
+section("pricing: the fee (smooth curve) and VAT are recorded on every sale");
 {
   await fetch(MOCK + "/__reset_limits");
-  const cases = [[50, 0.5, 0.075, 0.575, 49.425], [300, 0.9245, 0.1387, 1.0632, 298.9368], [1000, 1.5, 0.225, 1.725, 998.275], [7500, 2, 0.3, 2.3, 7497.7], [25000, 5, 0.75, 5.75, 24994.25]];
+  const cases = [[50, 0.46, 0.07, 0.53, 49.47], [300, 0.85, 0.13, 0.98, 299.02], [1000, 1.26, 0.19, 1.45, 998.55], [7500, 2.03, 0.3, 2.33, 7497.67], [25000, 2.51, 0.38, 2.89, 24997.11]];
   for (const [amt, base, vat, total, net] of cases) {
     const r = await call("POST", "/api/transactions", { ck: ownerA, body: { merchant_id: A, amount: amt } });
     const row = (await db()).transactions.find((x) => x.token === r.data?.token) ?? {};
     t(`a ${amt} ETB sale records fee ${base} + VAT ${vat} = ${total}, merchant receives ${net}`, r.status === 201 && Number(row.base_fee) === base && Number(row.vat_fee) === vat && Number(row.fee_ft) === total && Number(row.net_merchant_settlement) === net, JSON.stringify({ base: row.base_fee, vat: row.vat_fee, total: row.fee_ft, net: row.net_merchant_settlement }));
     if (amt === 300) t("the new sale also carries the breakdown back to the terminal", r.data.base_fee === base && r.data.vat_fee === vat && r.data.net_merchant_settlement === net && !("payee_accounts" in r.data));
   }
-  const tiny = await call("POST", "/api/transactions", { ck: ownerA, body: { merchant_id: A, amount: 0.5 } });
+  const tiny = await call("POST", "/api/transactions", { ck: ownerA, body: { merchant_id: A, amount: 0.1 } });
   t("a payment too small to cover its own fee is refused", tiny.status === 400 && tiny.data?.code === "AMOUNT_TOO_SMALL", JSON.stringify(tiny.data));
   const listed = await call("GET", `/api/transactions?${new URLSearchParams({ merchant_id: A, from: new Date(Date.now() - 3600_000).toISOString(), to: new Date(Date.now() + 3600_000).toISOString() })}`, { ck: ownerA });
   t("the merchant's ledger shows the breakdown", listed.status === 200 && listed.data.rows.some((r) => r.base_fee != null && r.vat_fee != null && r.net_merchant_settlement != null));
@@ -810,11 +810,11 @@ section("ride-hailing: a driver is paid for a finished trip");
   t("a wrong key: refused", (await create(intent, "2pay_rk_" + "x".repeat(43))).status === 401);
   t("a fare of zero is refused", (await create({ ...intent, fare_amount: 0 }, KEY)).status === 400);
   t("an unknown rail is refused", (await create({ ...intent, driver_wallet_accounts: [{ rail: "NOPE", account_number: "0911223344" }] }, KEY)).status === 400);
-  t("a fare too small to cover its fee is refused", (await create({ ...intent, partner_ride_id: "tiny", fare_amount: 0.5 }, KEY)).data?.code === "AMOUNT_TOO_SMALL");
+  t("a fare too small to cover its fee is refused", (await create({ ...intent, partner_ride_id: "tiny", fare_amount: 0.1 }, KEY)).data?.code === "AMOUNT_TOO_SMALL");
 
   const c1 = await create(intent, KEY);
   const TOK = c1.data?.session_token;
-  t("a checkout is created with the fare, the driver link and the fee breakdown", c1.status === 201 && SESSION_OK(TOK) && c1.data.fare.amount === 250 && c1.data.pricing.total_fee === 1.0447 && c1.data.pricing.net_driver_settlement === 248.9553, JSON.stringify(c1.data).slice(0, 200));
+  t("a checkout is created with the fare, the driver link and the fee breakdown", c1.status === 201 && SESSION_OK(TOK) && c1.data.fare.amount === 250 && c1.data.pricing.total_fee === 0.92 && c1.data.pricing.net_driver_settlement === 249.08, JSON.stringify(c1.data).slice(0, 200));
   t("the reply has the app deep link, the Android intent and the web terminal link", c1.data.deep_link === `twopay://checkout?token=${TOK}` && c1.data.terminal_url.endsWith(`/terminal?session_token=${TOK}`) && c1.data.android_intent.startsWith("intent://checkout") && c1.data.android_intent.includes("package=com.twopay.merchant"));
   t("the driver's accounts are returned masked only", c1.data.payout_accounts.length === 3 && !JSON.stringify(c1.data).match(/0911223344|922334455|01320123456789/));
   const srow = (await db()).ride_sessions.find((x) => x.id === c1.data.session_id);
@@ -836,7 +836,7 @@ section("ride-hailing: a driver is paid for a finished trip");
   const row = (await db()).transactions.find((x) => x.token === m1.data?.token) ?? {};
   t("the driver's phone gets a pay node for the fare", m1.status === 201 && m1.data.amount === 250 && m1.data.source === "RIDE" && m1.data.ride?.partner === "Feres", JSON.stringify(m1.data).slice(0, 160));
   t("the sale pays the driver's accounts, stored encrypted and never sent back", !("payee_accounts" in m1.data) && /enc:v1:/.test(JSON.stringify(row.payee_accounts)) && !JSON.stringify(row.payee_accounts).match(/911223344|922334455|1320123456789/) && row.ride_session_id === c1.data.session_id && row.merchant_id === ledgerRec.id);
-  t("the sale carries the fee breakdown", Number(row.base_fee) === 0.9084 && Number(row.vat_fee) === 0.1363 && Number(row.fee_ft) === 1.0447 && Number(row.net_merchant_settlement) === 248.9553);
+  t("the sale carries the fee breakdown", Number(row.base_fee) === 0.8 && Number(row.vat_fee) === 0.12 && Number(row.fee_ft) === 0.92 && Number(row.net_merchant_settlement) === 249.08);
 
   // ---- the passenger's phone
   const pg = await call("GET", `/api/pay/${m1.data.token}`);
@@ -873,7 +873,7 @@ section("ride-hailing: a driver is paid for a finished trip");
 
   // ---- what the partner sees
   const view = await call("GET", `${BASEP}/${c1.data.session_id}`, { headers: auth(KEY) });
-  t("the partner sees the ride paid, with the fee breakdown", view.status === 200 && view.data.status === "PAID" && view.data.payment?.paid_via === "Telebirr" && view.data.payment.base_fee === 0.9084 && view.data.payment.vat_fee === 0.1363 && view.data.payment.total_fee === 1.0447 && view.data.payment.net_driver_settlement === 248.9553, JSON.stringify(view.data));
+  t("the partner sees the ride paid, with the fee breakdown", view.status === 200 && view.data.status === "PAID" && view.data.payment?.paid_via === "Telebirr" && view.data.payment.base_fee === 0.8 && view.data.payment.vat_fee === 0.12 && view.data.payment.total_fee === 0.92 && view.data.payment.net_driver_settlement === 249.08, JSON.stringify(view.data));
   const byRide = await call("GET", `${BASEP}?partner_ride_id=RIDE-1001`, { headers: auth(KEY) });
   t("...and can look a ride up by its own id", byRide.status === 200 && byRide.data.session_id === c1.data.session_id && byRide.data.status === "PAID");
   t("a paid ride cannot be sent again or minted again", (await create(intent, KEY)).data?.code === "ALREADY_PAID" && (await mint(TOK2)).data?.code === "ALREADY_PAID");
@@ -1159,7 +1159,7 @@ section("admin hub: network nodes, Fayda tracker and NBE compliance evidence");
   t("sales search: an owner cannot use it", (await call("GET", "/api/admin/sales", { ck: ownerA })).status === 403);
   t("compliance: paid sales are counted by evidence type", co.status === 200 && co.data.paths.total >= 1 && co.data.paths.provider_confirmed >= 1 && co.data.window_days === 7, JSON.stringify(co.data?.paths));
   t("compliance: the ride sale shows the route payer app -> provider -> driver's account (masked), confirmed by the provider", rideSale?.path === "PROVIDER_CONFIRMED" && rideSale.payer_app === "Telebirr" && !!rideSale.provider && rideSale.to_institution === "Telebirr" && rideSale.to_account === "••••3344" && !!rideSale.confirmed_at, JSON.stringify(rideSale));
-  t("compliance: the fee, VAT and merchant net are in the evidence", rideSale?.base_fee === 0.9084 && rideSale.vat_fee === 0.1363 && rideSale.net_to_merchant === 248.9553, JSON.stringify(rideSale));
+  t("compliance: the fee, VAT and merchant net are in the evidence", rideSale?.base_fee === 0.8 && rideSale.vat_fee === 0.12 && rideSale.net_to_merchant === 249.08, JSON.stringify(rideSale));
   t("compliance: funds in flight are reported", typeof co.data.in_flight.count === "number" && typeof co.data.in_flight.amount === "number");
   t("compliance: phones bound to the app are counted and the latest listed with a short fingerprint only", co.data.devices.total >= 1 && co.data.devices.latest.length >= 1 && co.data.devices.latest.every((d) => d.device.length === 10 && !("device_id_hash" in d)), JSON.stringify(co.data.devices?.latest?.[0]));
   t("compliance: it shows exceptions, not every sale (a short sample, and a page-size cap)", Array.isArray(co.data.exceptions) && co.data.sample.length <= 10 && !("sales" in co.data));
@@ -1196,7 +1196,11 @@ section("AI layer: pseudonymised events leave in parallel, signed, and scores co
   const slow = Date.now();
   const sale2 = await call("POST", "/api/transactions", { ck: ownerA, body: { merchant_id: A, amount: 90 } });
   const took = Date.now() - slow;
-  await wait(1200);
+  // each waiting event is tried once in the background: give them a few seconds rather than a fixed moment (a busy dev server is slower)
+  for (let i = 0; i < 20; i++) {
+    await wait(300);
+    if ((await db()).ai_event_outbox.filter((o) => !o.sent_at).every((o) => o.attempts >= 1)) break;
+  }
   const queued = (await db()).ai_event_outbox.filter((o) => !o.sent_at);
   const after2 = (await db()).ai_event_outbox;
   t("with the AI layer down, the sale still works and its event waits in the outbox", sale2.status === 201 && took < 4000 && after2.length === before + 1 && queued.length >= 1 && queued.every((o) => o.attempts >= 1 && !!o.last_error), `${took} ms; outbox ${before} -> ${after2.length}; queued ${queued.length}: ${queued.map((o) => `${o.stage}/${o.attempts}/${o.last_error}`).join(" | ")}`);

@@ -2,12 +2,12 @@
 
 import { useMemo, useState } from "react";
 import { Calculator } from "lucide-react";
-import { BRACKETS, VAT_PERCENT, priceTransaction } from "@/lib/pricing/engine";
+import { BAND_LABEL, FEE_PARAMS, PRICE_LIST_AMOUNTS, VAT_PERCENT, priceTransaction } from "@/lib/pricing/engine";
 import { fmt } from "@/lib/format";
 import type { DayStats, NodeFee } from "@/lib/admin-types";
 
 const money = (n: number) => n.toFixed(4).replace(/0+$/, "").replace(/\.$/, ".0");
-const SAMPLES = [50, 100, 300, 499.99, 500, 2500, 5000, 9999, 10000, 50000];
+const SAMPLES = [5, 25, 50, 100, 300, 500, 2500, 5000, 10000, 50000];
 
 /** The fee schedule in force and a calculator. The schedule is fixed in code (lib/pricing/engine.ts), so what is shown here is what is charged. */
 export function FeeInspector({ stats, nodes }: { stats: DayStats; nodes: NodeFee[] }) {
@@ -22,29 +22,29 @@ export function FeeInspector({ stats, nodes }: { stats: DayStats; nodes: NodeFee
         <Calculator className="h-5 w-5 text-brand" /> Orchestration fee schedule
       </h2>
       <p className="mb-4 text-xs text-slate-500">
-        2Pay&apos;s fee depends on the payment amount, and {VAT_PERCENT}% VAT is added to 2Pay&apos;s fee only. Every sale records the fee before VAT, the VAT, and what the merchant is paid.
+        2Pay&apos;s fee F<sub>t</sub> = max({FEE_PARAMS.floor.toFixed(2)}, min(1.5% × amount, {FEE_PARAMS.base.toFixed(2)} + {FEE_PARAMS.slope.toFixed(2)} × ln(1 + amount/100), {FEE_PARAMS.cap.toFixed(2)})), rounded to the nearest santim. {VAT_PERCENT}% VAT is added to 2Pay&apos;s fee only, also to the nearest santim. Every sale records the fee before VAT, the VAT, and what the merchant is paid.
       </p>
 
       <div className="overflow-x-auto">
         <table className="w-full min-w-[520px] text-left text-sm">
           <thead className="border-b border-slate-800 text-xs uppercase text-slate-400">
             <tr>
-              {["Amount", "Fee before VAT", `VAT ${VAT_PERCENT}%`, "Total deducted"].map((h) => (
+              {["Amount (ETB)", "Fee before VAT", `VAT ${VAT_PERCENT}%`, "Total deducted", "Fee as a share", "Part of the formula"].map((h) => (
                 <th key={h} className="px-3 py-2 font-medium">{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {BRACKETS.map((b) => {
-              const lo = priceTransaction(Math.max(0.01, b.from));
-              const hi = Number.isFinite(b.to) ? priceTransaction(b.to - 0.01) : lo;
-              const range = (a: number, c: number) => (a === c ? `${money(a)} ETB` : `${money(a)} to ${money(c)} ETB`);
+            {PRICE_LIST_AMOUNTS.map((a) => {
+              const p = priceTransaction(a);
               return (
-                <tr key={b.label} className="border-b border-slate-800/60 last:border-0">
-                  <td className="px-3 py-2">{b.label}</td>
-                  <td className="px-3 py-2 tabular-nums">{range(lo.base_fee, hi.base_fee)}</td>
-                  <td className="px-3 py-2 tabular-nums text-slate-300">{range(lo.vat_fee, hi.vat_fee)}</td>
-                  <td className="px-3 py-2 font-semibold tabular-nums">{range(lo.total_fee, hi.total_fee)}</td>
+                <tr key={a} className="border-b border-slate-800/60 last:border-0">
+                  <td className="px-3 py-2 tabular-nums">{fmt(a)}</td>
+                  <td className="px-3 py-2 tabular-nums">{p.base_fee.toFixed(2)}</td>
+                  <td className="px-3 py-2 tabular-nums text-slate-300">{p.vat_fee.toFixed(2)}</td>
+                  <td className="px-3 py-2 font-semibold tabular-nums">{p.total_fee.toFixed(2)}</td>
+                  <td className="px-3 py-2 tabular-nums text-slate-300">{((p.base_fee / a) * 100).toFixed(3)}%</td>
+                  <td className="px-3 py-2 text-slate-400">{BAND_LABEL[p.band]}</td>
                 </tr>
               );
             })}

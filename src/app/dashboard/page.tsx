@@ -134,7 +134,7 @@ function Compliance({ settled, fees }: { settled: number; fees: number }) {
         <div className="rounded-2xl border border-slate-800 bg-slate-900 p-4">
           <div className="flex items-center gap-2 text-xs text-slate-400"><Coins className="h-4 w-4 text-brand" /> Fee revenue (incl. VAT)</div>
           <div className="mt-2 text-3xl font-bold tabular-nums">{fmt(fees)} ETB</div>
-          <div className="text-xs text-slate-500">Tiered fee plus 15% VAT, deducted from the merchant</div>
+          <div className="text-xs text-slate-500">Fee plus 15% VAT, deducted from the merchant</div>
         </div>
       </div>
 

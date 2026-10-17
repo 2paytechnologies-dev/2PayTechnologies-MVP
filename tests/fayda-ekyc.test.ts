@@ -78,10 +78,10 @@ describe("createPayNode records the fee ledger", () => {
     const { admin, inserted } = fakeAdmin(M);
     const r = await createPayNode(admin, "m1", 300, "TERMINAL");
     expect(r.ok).toBe(true);
-    expect(inserted[0]).toMatchObject({ amount: 300, base_fee: 0.9245, vat_fee: 0.1387, fee_ft: 1.0632, net_merchant_settlement: 298.9368 });
+    expect(inserted[0]).toMatchObject({ amount: 300, base_fee: 0.85, vat_fee: 0.13, fee_ft: 0.98, net_merchant_settlement: 299.02 });
   });
-  it("prices each bracket from the schedule", async () => {
-    for (const [amount, total, net] of [[50, 0.575, 49.425], [1000, 1.725, 998.275], [7000, 2.3, 6997.7], [20000, 5.75, 19994.25]] as const) {
+  it("prices each amount from the schedule", async () => {
+    for (const [amount, total, net] of [[50, 0.53, 49.47], [1000, 1.45, 998.55], [7000, 2.31, 6997.69], [20000, 2.78, 19997.22], [100000, 3.45, 99996.55]] as const) {
       const { admin, inserted } = fakeAdmin(M);
       expect((await createPayNode(admin, "m1", amount, "TERMINAL")).ok).toBe(true);
       expect(inserted[0]).toMatchObject({ fee_ft: total, net_merchant_settlement: net });
@@ -89,7 +89,7 @@ describe("createPayNode records the fee ledger", () => {
   });
   it("refuses an amount too small to cover its own fee", async () => {
     const { admin, inserted } = fakeAdmin(M);
-    const r = await createPayNode(admin, "m1", 0.5, "TERMINAL");
+    const r = await createPayNode(admin, "m1", 0.1, "TERMINAL");
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.body.code).toBe("AMOUNT_TOO_SMALL");
     expect(inserted).toHaveLength(0);
@@ -126,8 +126,8 @@ describe("a ride sale pays the driver, not the partner", () => {
     const r = await createPayNode(admin, "m1", 250, "RIDE", null, { rideSessionId: "rs-1", accounts: driver });
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    // fee: base 0.86 + (150/400) * 0.129 = 0.9084, VAT 0.1363, total 1.0447
-    expect(inserted[0]).toMatchObject({ source: "RIDE", ride_session_id: "rs-1", base_fee: 0.9084, vat_fee: 0.1363, fee_ft: 1.0447, net_merchant_settlement: 248.9553 });
+    // fee: 0.30 + 0.40 x ln(1 + 250/100) = 0.8011 -> 0.80, VAT 0.12, total 0.92
+    expect(inserted[0]).toMatchObject({ source: "RIDE", ride_session_id: "rs-1", base_fee: 0.8, vat_fee: 0.12, fee_ft: 0.92, net_merchant_settlement: 249.08 });
     expect(inserted[0].routed_bank).toMatchObject({ institution: "Awash Bank", account_masked: "••••6789" });
     expect(inserted[0].routed_wallet).toMatchObject({ institution: "Telebirr", account_masked: "••••3344" });
     expect(inserted[0].payee_accounts).toBe(driver); // kept on the sale for the payment, encrypted when DATA_ENCRYPTION_KEY is set

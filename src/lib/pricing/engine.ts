@@ -1,44 +1,44 @@
 /**
- * The 2Pay orchestration fee: a tiered schedule on the transaction amount (T_a, in ETB), with 15% VAT charged on 2Pay's fee only.
+ * The 2Pay orchestration fee F_t on a transaction amount A (ETB), with 15% VAT charged on 2Pay's fee only.
  *
- *   T_a < 100            base 0.50
- *   100 <= T_a < 500     base rises linearly from 0.86 (at 100) towards 0.989 (at 500):
- *                          0.86 + ((T_a - 100) / 400) * (0.989 - 0.86)
- *   500 <= T_a < 5,000   base 1.50
- *   5,000 <= T_a < 10,000 base 2.00
- *   T_a >= 10,000        base 5.00 (a hard ceiling, however large the payment)
+ *   F_t = max(0.10, min(1.5% x A, 0.30 + 0.40 x ln(1 + A/100), 3.00)), rounded to the nearest santim
  *
- *   vat_fee = base_fee * 15%      total_fee = base_fee + vat_fee      net_merchant_settlement = T_a - total_fee
+ *   band     active range (ETB)     what it is
+ *   FLOOR    A below about 6.7      the 0.10 minimum fee
+ *   MICRO    about 6.7 to 26        1.5% of the amount (keeps tiny payments cheap)
+ *   CURVE    about 26 to 85,300     0.30 + 0.40 x ln(1 + A/100): smooth, no tier jumps
+ *   CAP      about 85,300 and over  the 3.00 maximum fee
  *
- * Money is held in ten-thousandths of an ETB (integers) so no floating-point drift can creep into the ledger; the figures
- * returned are those integers divided back to ETB (at most 4 decimals), which is also how they are stored.
+ *   vat_fee = F_t x 15%, rounded to the nearest santim      total_fee = F_t + vat_fee      net_merchant_settlement = A - total_fee
  *
- * The schedule has two steps by design (it jumps at 100 and at 500). Those are the published brackets, not a bug.
+ * The fee and the VAT are worked out in whole santim (hundredths of a birr) so the VAT rounding is exact. Amounts are held in
+ * ten-thousandths of an ETB (integers) so no floating-point drift can creep into the ledger; the figures returned are those
+ * integers divided back to ETB, which is also how they are stored (numeric(14,4)).
+ *
+ * Once the payment switch confirms its per-transaction cost, FEE_PARAMS.floor, .base and .slope are the three constants to change.
  */
 
 export const VAT_PERCENT = 15;
 export const VAT_RATE = VAT_PERCENT / 100;
+
+/** The schedule's constants, in ETB (the micro-ticket guard is 1.5% = 15 per thousand). */
+export const FEE_PARAMS = { floor: 0.1, base: 0.3, slope: 0.4, cap: 3.0, microPerMille: 15 } as const;
+
 const UNIT = 10_000; // 1 ETB = 10,000 units
+const SANTIM_UNITS = 100; // 1 santim = 100 units
 
-export interface Bracket {
-  /** Inclusive lower bound of the bracket, in ETB. */
-  from: number;
-  /** Exclusive upper bound (Infinity for the top bracket). */
-  to: number;
-  label: string;
-}
+export type Band = "FLOOR" | "MICRO" | "CURVE" | "CAP";
 
-export const BRACKETS: Bracket[] = [
-  { from: 0, to: 100, label: "Under 100 ETB" },
-  { from: 100, to: 500, label: "100 to under 500 ETB" },
-  { from: 500, to: 5_000, label: "500 to under 5,000 ETB" },
-  { from: 5_000, to: 10_000, label: "5,000 to under 10,000 ETB" },
-  { from: 10_000, to: Infinity, label: "10,000 ETB and over" },
-];
+export const BAND_LABEL: Record<Band, string> = {
+  FLOOR: "Minimum fee",
+  MICRO: "1.5% of the amount",
+  CURVE: "Smooth curve",
+  CAP: "Maximum fee",
+};
 
 export interface Price {
   amount: number;
-  /** 2Pay's fee before VAT. */
+  /** 2Pay's fee before VAT (F_t). */
   base_fee: number;
   vat_rate: number;
   /** 15% of base_fee. */
@@ -47,32 +47,39 @@ export interface Price {
   total_fee: number;
   /** amount - total_fee: what the merchant receives. */
   net_merchant_settlement: number;
-  bracket: string;
+  /** Which part of the formula set the fee. */
+  band: Band;
 }
 
 const toUnits = (etb: number) => Math.round(etb * UNIT);
 const toEtb = (units: number) => units / UNIT;
 
-/** The base fee in ETB units for an amount in ETB units. */
-function baseUnits(amountUnits: number): number {
-  const a = amountUnits / UNIT;
-  if (a < 100) return toUnits(0.5);
-  if (a < 500) return Math.round(toUnits(0.86) + ((amountUnits - toUnits(100)) / toUnits(400)) * (toUnits(0.989) - toUnits(0.86)));
-  if (a < 5_000) return toUnits(1.5);
-  if (a < 10_000) return toUnits(2);
-  return toUnits(5);
+/** F_t in whole santim, and which part of the formula set it, for an amount in ETB units. */
+function feeSantim(amountUnits: number): { santim: number; band: Band } {
+  const floor = FEE_PARAMS.floor * 100;
+  const cap = FEE_PARAMS.cap * 100;
+  // 1.5% of the amount, in santim, from the integer amount (so an exact half-santim is exactly a half).
+  const micro = (amountUnits * FEE_PARAMS.microPerMille) / (1000 * SANTIM_UNITS);
+  const curve = 100 * (FEE_PARAMS.base + FEE_PARAMS.slope * Math.log(1 + amountUnits / (100 * UNIT)));
+  const raw = Math.max(floor, Math.min(micro, curve, cap));
+  const band: Band = raw === floor ? "FLOOR" : raw === micro ? "MICRO" : raw === cap ? "CAP" : "CURVE";
+  return { santim: Math.round(raw), band };
 }
 
 /** The fee schedule for one transaction amount (ETB, greater than zero). Throws on anything that is not a positive finite amount. */
 export function priceTransaction(amount: number): Price {
   if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) throw new RangeError("amount must be a positive number");
   const a = toUnits(amount);
-  const base = baseUnits(a);
-  const vat = Math.round((base * VAT_PERCENT) / 100); // integer arithmetic: 9890 * 15 / 100 is exactly 1483.5, never 1483.4999...
-  const total = base + vat;
-  const bracket = BRACKETS.find((b) => amount >= b.from && amount < b.to) ?? BRACKETS[BRACKETS.length - 1];
-  return { amount: toEtb(a), base_fee: toEtb(base), vat_rate: VAT_RATE, vat_fee: toEtb(vat), total_fee: toEtb(total), net_merchant_settlement: toEtb(a - total), bracket: bracket.label };
+  const { santim: fee, band } = feeSantim(a);
+  const vat = Math.round((fee * VAT_PERCENT) / 100); // whole santim: 15 x 15 / 100 is exactly 2.25, 10 x 15 / 100 exactly 1.5 (rounds to 2)
+  const base = fee * SANTIM_UNITS;
+  const vatUnits = vat * SANTIM_UNITS;
+  const total = base + vatUnits;
+  return { amount: toEtb(a), base_fee: toEtb(base), vat_rate: VAT_RATE, vat_fee: toEtb(vatUnits), total_fee: toEtb(total), net_merchant_settlement: toEtb(a - total), band };
 }
 
 /** The base fee alone, for display and tests. */
 export const baseFee = (amount: number) => priceTransaction(amount).base_fee;
+
+/** Amounts shown in the published price list (the admin hub's fee panel and the docs). */
+export const PRICE_LIST_AMOUNTS = [5, 10, 25, 50, 100, 200, 500, 1_000, 2_500, 5_000, 10_000, 25_000, 50_000, 85_300, 100_000];
